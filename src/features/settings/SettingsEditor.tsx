@@ -338,9 +338,9 @@ export function SettingsEditor({
               min={30}
               max={1800}
               step={30}
-              value={[s.circuit_recovery_secs]}
+              value={s.circuit_recovery_secs}
               onValueChange={(value) =>
-                onChange("circuit_recovery_secs", value[0])
+                onChange("circuit_recovery_secs", value)
               }
             />
             <p className="text-xs text-muted-foreground">30s – 1800s</p>

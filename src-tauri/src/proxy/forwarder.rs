@@ -3041,7 +3041,19 @@ async fn record_circuit_success(state: &ProxyState, entry_id: &str) {
 async fn cool_down_entry(state: &ProxyState, entry: &ApiEntry) {
     let settings = state.settings.read().await.clone();
     let threshold = (settings.circuit_failure_threshold as u32).max(1);
-    let recovery_secs = settings.circuit_recovery_secs.max(1);
+    let recovery_secs_u64 = settings.circuit_recovery_secs.max(1) as u64;
+
+    // Record failure in circuit breaker and get adaptive backoff delay
+    let mut breakers = state.circuit_breakers.write().await;
+    let cb = breakers
+        .entry(entry.id.clone())
+        .or_insert_with(|| CircuitBreaker::new(recovery_secs_u64));
+    cb.set_recovery_secs(recovery_secs_u64);
+    cb.record_failure(threshold);
+    let effective_delay = cb.calculate_backoff_delay();
+    let is_open = cb.get_state() == crate::proxy::circuit_breaker::CircuitState::Open;
+    let open_cycles = cb.consecutive_opens();
+    drop(breakers);
 
     // Increment failure count in memory
     let mut counts = state.failure_counts.write().await;
@@ -3051,8 +3063,8 @@ async fn cool_down_entry(state: &ProxyState, entry: &ApiEntry) {
     drop(counts);
 
     // Any failure is counted. Before threshold: temporary cooldown.
-    // At/above threshold: remove from AUTO and set a 6h long cooldown.
-    if current_count >= threshold {
+    // At/above threshold: long-term 6h freeze protection.
+    if current_count >= threshold * 2 {
         let six_hours_later = chrono::Utc::now().timestamp() + 21600;
         let _ = state
             .db
@@ -3063,9 +3075,6 @@ async fn cool_down_entry(state: &ProxyState, entry: &ApiEntry) {
         }
         crate::state_version::bump("pool");
 
-        let mut breakers = state.circuit_breakers.write().await;
-        breakers.remove(&entry.id);
-
         log::warn!(
             "Entry {} disabled after {} consecutive failures. Long cooldown: 6h.",
             entry.id,
@@ -3074,26 +3083,20 @@ async fn cool_down_entry(state: &ProxyState, entry: &ApiEntry) {
         return;
     }
 
-    let cooldown_until = chrono::Utc::now().timestamp() + recovery_secs as i64;
+    // Synchronize DB cooldown_until with CircuitBreaker adaptive recovery deadline
+    let cooldown_until = chrono::Utc::now().timestamp() + effective_delay as i64;
     let _ = state.db.set_entry_cooldown(&entry.id, Some(cooldown_until));
     if let Some(h) = &state.app_handle {
         crate::event::emit(h, "entries-changed");
     }
     crate::state_version::bump("pool");
 
-    let mut breakers = state.circuit_breakers.write().await;
-    let recovery_secs_u64 = settings.circuit_recovery_secs as u64;
-
-    let cb = breakers
-        .entry(entry.id.clone())
-        .or_insert_with(|| CircuitBreaker::new(recovery_secs_u64));
-    cb.set_recovery_secs(recovery_secs_u64);
-    cb.record_failure(threshold);
-
     log::warn!(
-        "Entry {} cooled down for {}s after recoverable failure count {}/{}.",
+        "Entry {} circuit state={:?}, adaptive cooldown={}s (open cycle {}), failure count {}/{}.",
         entry.id,
-        recovery_secs,
+        if is_open { "Open" } else { "Closed" },
+        effective_delay,
+        open_cycles,
         current_count,
         threshold
     );
@@ -3142,6 +3145,17 @@ fn spawn_cool_down_entry(
         let threshold = (settings.circuit_failure_threshold as u32).max(1);
         let recovery_secs = settings.circuit_recovery_secs as u64;
 
+        let mut breakers = circuit_breakers.write().await;
+        let cb = breakers
+            .entry(entry_id.clone())
+            .or_insert_with(|| CircuitBreaker::new(recovery_secs));
+        cb.set_recovery_secs(recovery_secs);
+        cb.record_failure(threshold);
+        let effective_delay = cb.calculate_backoff_delay();
+        let is_open = cb.get_state() == crate::proxy::circuit_breaker::CircuitState::Open;
+        let open_cycles = cb.consecutive_opens();
+        drop(breakers);
+
         // Increment failure count
         let mut counts = failure_counts.write().await;
         let count = counts.entry(entry_id.clone()).or_insert(0);
@@ -3150,8 +3164,8 @@ fn spawn_cool_down_entry(
         drop(counts);
 
         // Any failure is counted. Before threshold: temporary cooldown.
-        // At/above threshold: remove from AUTO and set a 6h long cooldown.
-        if current_count >= threshold {
+        // At/above threshold: long-term 6h freeze protection.
+        if current_count >= threshold * 2 {
             let six_hours_later = chrono::Utc::now().timestamp() + 21600;
             let _ = db.set_entry_cooldown(&entry_id, Some(six_hours_later));
             let _ = db.toggle_entry(&entry_id, false);
@@ -3168,26 +3182,20 @@ fn spawn_cool_down_entry(
             return;
         }
 
-        let cooldown_until = chrono::Utc::now().timestamp() + recovery_secs as i64;
+        let cooldown_until = chrono::Utc::now().timestamp() + effective_delay as i64;
         let _ = db.set_entry_cooldown(&entry_id, Some(cooldown_until));
         if let Some(h) = &app_handle {
             crate::event::emit(h, "entries-changed");
         }
         crate::state_version::bump("pool");
 
-        let mut breakers = circuit_breakers.write().await;
-        let cb = breakers
-            .entry(entry_id.clone())
-            .or_insert_with(|| CircuitBreaker::new(recovery_secs));
-        cb.set_recovery_secs(recovery_secs);
-        cb.record_failure(threshold);
-
         log::warn!(
-            "Entry {} cooled down for {}s after recoverable failure count {}/{}.",
+            "Entry {} cooled down for {}s after failure count {}/{}. Circuit open={:?}.",
             entry_id,
-            recovery_secs,
+            effective_delay,
             current_count,
-            threshold
+            threshold,
+            is_open
         );
     });
 }

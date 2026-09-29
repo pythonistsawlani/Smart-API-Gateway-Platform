@@ -60,10 +60,15 @@ fn sort_by_release_date(entries: &mut [ApiEntry]) {
     });
 }
 
-fn is_not_cooled_down(entry: &ApiEntry) -> bool {
+fn is_not_long_term_frozen(entry: &ApiEntry) -> bool {
+    let now = chrono::Utc::now().timestamp();
     entry
         .cooldown_until
-        .map(|until| until <= chrono::Utc::now().timestamp())
+        .map(|until| {
+            // A long-term freeze (e.g. 6h freeze) is > 1 hour into the future.
+            // Temporary circuit breaker cooldowns are managed by CircuitBreaker::is_available().
+            until <= now || (until - now) <= 1800
+        })
         .unwrap_or(true)
 }
 
@@ -82,7 +87,7 @@ fn available_entries(
 ) -> Vec<ApiEntry> {
     let mut available: Vec<ApiEntry> = entries
         .iter()
-        .filter(|e| e.enabled && is_not_cooled_down(e))
+        .filter(|e| e.enabled && is_not_long_term_frozen(e))
         .filter(|e| {
             if let Some(cb) = breakers.get(&e.id) {
                 cb.is_available()
