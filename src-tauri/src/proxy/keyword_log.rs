@@ -1,14 +1,14 @@
-//! 记录未被现有规则（状态码/关键词）拦截的失败错误原文，供人工或 AI 分析后
-//! 增补 disable_keywords。状态码一并记录，便于判断哪类失败值得重试。
+//! Record raw failure errors not intercepted by existing rules (status codes/keywords) for manual or AI analysis
+//! to supplement disable_keywords. Status codes are recorded as well to determine which failures are retryable.
 //!
-//! 输出文件：<data_dir>/disable-keyword-candidates.txt，每行 `{status} {归一化原文}`。
-//! 按 status + 归一化原文去重；写入是 best-effort，失败仅告警，绝不影响转发主流程。
+//! Output file: <data_dir>/disable-keyword-candidates.txt, one `{status} {normalized_raw}` per line.
+//! Deduplicated by status + normalized raw text; write is best-effort and failures only warn without affecting forwarding.
 
 use std::collections::HashSet;
 
 const LOG_FILE_NAME: &str = "disable-keyword-candidates.txt";
 
-/// 归一化错误原文用于去重与单行存储：换行/制表转空格、压缩连续空白、去首尾空白、转小写。
+/// Normalize raw error text for deduplication and single-line storage: whitespace collapsed, trimmed, lowercased.
 fn normalize_message(message: &str) -> String {
     let mut result = String::with_capacity(message.len());
     let mut last_was_space = false;
@@ -27,7 +27,7 @@ fn normalize_message(message: &str) -> String {
     result.trim().to_lowercase()
 }
 
-/// 记录一条未知失败（状态码 + 归一化原文）。已存在的相同行会被跳过，保证文件无重复。
+/// Record an unknown failure (status code + normalized raw text). Existing identical lines are skipped.
 pub async fn record_unknown_failure(status: u16, message: &str) {
     let normalized = normalize_message(message);
     if normalized.is_empty() {

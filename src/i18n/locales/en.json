@@ -1,6 +1,6 @@
 {
   "app": {
-    "title": "API Switch"
+    "title": "Smart API Gateway"
   },
   "nav": {
     "apiPool": "Models",
@@ -206,7 +206,14 @@
       "months": "{{count}} months",
       "testModels": "Test Models",
       "testingModels": "Testing...",
-      "testModelsTimeout": "Model speed test timed out",
+      "testModelsTimeout": "Test timeout",
+      "requiredFieldsHint": "Please fill in a valid Base URL and API Key before saving",
+      "headerInjectionInvalidObject": "Header injection config must be a valid JSON object",
+      "headerInjectionInvalidType": "Header name and value must be strings",
+      "headerInjectionInvalidJson": "Header injection config is not a valid JSON format",
+      "batchSaveSummary": "Batch save completed: {{success}} succeeded, {{failed}} failed",
+      "batchSaveAllFailed": "All model creation and saves failed",
+      "testFailed": "Failed",
       "tooManyModels": "Too many models ({{count}}), testing will take a long time. Please reduce the filter scope.",
       "createModel": "Create model \"{{name}}\"",
       "saveBeforeModelTest": "Save the new channel before testing models",
@@ -442,6 +449,31 @@
       "keywordFreezeScopeModel": "Model Level (recommended)",
       "keywordFreezeScopeChannel": "Channel Level"
     },
+    "rateLimit": {
+      "title": "Rate Limiting",
+      "enabled": "Enable Rate Limiting",
+      "enabledDesc": "Token-bucket limits per client IP, per access key, and per model. When a limit is exceeded the gateway returns 429 with a Retry-After header",
+      "perIp": "Per IP (requests/min)",
+      "perIpDesc": "Maximum requests per minute from a single client IP address",
+      "perKey": "Per Access Key (requests/min)",
+      "perKeyDesc": "Maximum requests per minute using the same access key",
+      "perModel": "Per Model (requests/min)",
+      "perModelDesc": "Maximum requests per minute for the same requested model"
+    },
+    "cors": {
+      "title": "CORS",
+      "allowedOrigins": "Allowed Origins",
+      "allowedOriginsDesc": "Comma-separated list of origins allowed to access the proxy. Empty = no cross-origin requests allowed (browsers blocked; curl/Tauri unaffected). Example: https://app.example.com,https://dev.example.com"
+    },
+    "tls": {
+      "title": "TLS / HTTPS",
+      "enabled": "Enable TLS",
+      "enabledDesc": "Serve the proxy over HTTPS using the provided certificate and key. Requires valid PEM files. Recommended for any network exposure beyond localhost.",
+      "certPath": "Certificate Path",
+      "certPathDesc": "Absolute path to the TLS certificate file (PEM format, e.g., /etc/ssl/certs/proxy.pem)",
+      "keyPath": "Private Key Path",
+      "keyPathDesc": "Absolute path to the TLS private key file (PEM format, e.g., /etc/ssl/private/proxy.key)"
+    },
     "tray": {
       "title": "System Tray",
       "autostart": "Auto-start with System",
@@ -495,7 +527,7 @@
       "copyButton": "Copy Export Text",
       "importSectionTitle": "Import Channels & Models",
       "importSectionDesc": "Only accepts JSON exported from this tool. A full validation will be performed before confirming the overwrite.",
-      "importPlaceholder": "Paste JSON exported from API Switch...",
+      "importPlaceholder": "Paste JSON exported from Smart API Gateway...",
       "importButton": "Import Channels & Models",
       "validating": "Validating...",
       "dialogTitle": "Confirm Overwrite Current Channels & Models",
@@ -516,7 +548,7 @@
         "importFailed": "Import failed, please re-paste a valid export text: {{error}}",
         "copySuccess": "Copied to clipboard.",
         "copyFailed": "Copy failed, please copy the text manually.",
-        "emptyImport": "Please paste the JSON text exported from API Switch first."
+        "emptyImport": "Please paste the JSON text exported from Smart API Gateway first."
       }
     }
   },
@@ -526,8 +558,8 @@
     "comingSoon": "Supported next version",
     "confirm": {
       "title": "Connect {{appName}}",
-      "description": "Generate API-Switch minimal config for: {{filePath}}. Windows desktop will back up and overwrite the file; other environments will show the config for manual copy. Continue?",
-      "autoKey": "API-Switch will use the automatically generated AUTO access key."
+      "description": "Generate Smart API Gateway minimal config for: {{filePath}}. Windows desktop will back up and overwrite the file; other environments will show the config for manual copy. Continue?",
+      "autoKey": "Smart API Gateway will use the automatically generated AUTO access key."
     },
     "success": "Config written: {{filePath}}",
     "backup": "Original backed up: {{backupPath}}",

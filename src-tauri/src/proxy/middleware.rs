@@ -1,39 +1,68 @@
-//! 转发层中间件
+//! Forwarding layer middleware
 //!
-//! 本模块的原初设计目标是把 forwarder 里的横切关注点（stream_options 注入、
-//! model:xxx 注入、usage 统计、熔断决策、idle timeout）抽象成可装配的中间件。
+//! Originally designed to abstract cross-cutting concerns in forwarder (stream_options injection,
+//! model:xxx injection, usage stats, circuit breaking, idle timeout) into modular middleware.
 //!
-//! 阶段 4 的收口决策：**只保留真正有独立价值的中间件**，其他横切逻辑保持
-//! 在 forwarder.rs 内原生实现，不强行中间件化。理由：
+//! Retained only middleware with genuine standalone value; other cross-cutting logic
+//! is implemented natively in forwarder.rs.
 //!
-//! - `StreamOptionsMiddleware`：**保留**。P2 的唯一实现路径，独立价值清晰
-//!   （把 `insert` 改成 `entry().or_insert()` 的修复逻辑集中在一处）。
+//! - `StreamOptionsMiddleware`: Retained. Independent value is clear
+//!   (centralizes merge logic using entry().or_insert()).
 //!
-//! - `ModelAnnotationMiddleware`（已删）：与 forwarder.rs 内的 `model_info_delta`
-//!   老路径功能重叠且缺少去重，实际装配会造成每 chunk 重复注入。P5 现在通过
-//!   在 `should_append_model_info` 里检查 `caller_kind == Responses` 来修复，
-//!   无需中间件。
+//! - `ModelAnnotationMiddleware` (removed): Redundant with model_info_delta
+//!   in forwarder.rs which caused duplicate injection per chunk. Now handled
+//!   by checking caller_kind == Responses in should_append_model_info,
+//!   without needing middleware.
 //!
-//! - `IdleTimeoutMiddleware`（已删）：idle timeout 依赖 async 状态机
-//!   （`tokio::time::sleep` + `poll` 重置），无法用同步 trait 方法表达。
-//!   实际实现在 forwarder.rs 的 `STREAMING_IDLE_TIMEOUT` poll 循环，以及
-//!   `claude.rs` 的 `transform_openai_sse_to_claude_stream` 里的 `tokio::select!`。
+//! - `IdleTimeoutMiddleware` (removed): idle timeout relies on async state machine
+//!   (tokio::time::sleep + poll reset), not expressible in synchronous trait methods.
+//!   Actually implemented in forwarder.rs STREAMING_IDLE_TIMEOUT poll loop and
+//!   claude.rs tokio::select! in transform_openai_sse_to_claude_stream.
 //!
-//! - `UsageLoggingMiddleware`（已删）：usage 统计需要跨 chunk 累积状态
+//! - `UsageLoggingMiddleware` (removed): usage tracking needs cross-chunk state accumulation
 //!   （`prompt_tokens` / `completion_tokens` / `first_token_ms` / `StreamLogGuard`），
-//!   不适合无状态 middleware 表达。实际在 forwarder.rs 原生实现。
+//!   unsuitable for stateless middleware. Implemented natively in forwarder.rs.
 //!
-//! - `CircuitBreakerMiddleware`（已删）：熔断决策需要访问共享 `circuit_breakers`
-//!   RwLock 以及根据状态码做异步写入，不适合同步 middleware trait。实际在
-//!   forwarder.rs 的 `cool_down_entry` / `disable_entry` 实现。
+//! - `CircuitBreakerMiddleware` (removed): circuit breaking needs shared circuit_breakers
+//!   RwLock and async writes based on status codes. Implemented natively in
+//!   forwarder.rs cool_down_entry / disable_entry.
 //!
-//! **留下的 `RequestContext` 和 `CallerKind`** 仍有价值——forwarder 通过
-//! `caller_kind` 区分调用方并在 `should_append_model_info` 等决策点做分支。
+//! Retained RequestContext and CallerKind allow forwarder to differentiate callers
+//! and branch at decision points such as should_append_model_info.
 
+use axum::extract::Request;
+use axum::middleware::Next;
+use axum::response::Response;
+use http::header::HeaderValue;
 use serde_json::Value;
 use std::sync::Arc;
 
-/// 调用方类型：标识代理被哪个入口 handler 调用
+/// Header carrying the gateway-wide correlation ID.
+pub const REQUEST_ID_HEADER: &str = "x-request-id";
+
+/// Generates (or preserves) an `X-Request-ID` for every inbound request and
+/// echoes it back on the response. Handlers and the forwarder read the same
+/// header from the request (the middleware mutates it in place), so usage
+/// logs and upstream calls share one correlation ID per request.
+pub async fn request_id_middleware(mut request: Request, next: Next) -> Response {
+    let request_id = request
+        .headers()
+        .get(REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    if let Ok(value) = HeaderValue::from_str(&request_id) {
+        request.headers_mut().insert(REQUEST_ID_HEADER, value);
+    }
+    let mut response = next.run(request).await;
+    if let Ok(value) = HeaderValue::from_str(&request_id) {
+        response.headers_mut().insert(REQUEST_ID_HEADER, value);
+    }
+    response
+}
+
+/// Caller type: identifies which entry handler invoked the proxy
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CallerKind {
     OpenAiChat,
@@ -43,7 +72,7 @@ pub enum CallerKind {
     Responses,
 }
 
-/// 请求上下文，传递给中间件
+/// Request context passed to middleware
 #[derive(Clone)]
 pub struct RequestContext {
     pub caller_kind: CallerKind,
@@ -51,27 +80,27 @@ pub struct RequestContext {
     pub requested_model: Arc<str>,
 }
 
-/// 转发器中间件 trait
+/// Forwarder middleware trait
 ///
-/// 当前只有 `StreamOptionsMiddleware` 实现。其他横切逻辑保持原生。
+/// Currently only StreamOptionsMiddleware is implemented. Other logic remains native.
 pub trait ForwarderMiddleware: Send + Sync {
-    /// 请求体发出前
+    /// Before request body is sent
     fn on_request(&self, _body: &mut Value, _ctx: &RequestContext) {}
-    /// 响应体接收后（非流式）
+    /// After response body is received (non-streaming)
     #[allow(dead_code)]
     fn on_response_complete(&self, _body: &mut Value, _ctx: &RequestContext) {}
-    /// SSE 数据块（流式）
+    /// SSE data chunk (streaming)
     #[allow(dead_code)]
     fn on_sse_chunk(&self, _chunk: &mut String, _ctx: &RequestContext) {}
 }
 
-/// P2 修复：`stream_options` 不再无条件覆盖，改用 `entry().or_insert()` 合并。
+/// StreamOptions: merge using `entry().or_insert()` instead of unconditional overwrite.
 ///
-/// 保留客户端显式传入的 `stream_options` 字段（如 `include_usage: false`、
-/// `continuous_usage_stats` 等），只在未传时补默认 `include_usage: true`。
+/// Preserve explicit client stream_options fields (such as `include_usage: false`,
+/// `continuous_usage_stats`, etc.), only defaulting to `include_usage: true` when omitted.
 ///
-/// 这是 P2 bug 的唯一修复路径——forwarder.rs 原有的 `body_obj.insert("stream_options", ...)`
-/// 已删除。
+/// This is the fix path for P2: the forwarder.rs original `body_obj.insert("stream_options", ...)`
+/// has been removed.
 pub struct StreamOptionsMiddleware;
 
 impl ForwarderMiddleware for StreamOptionsMiddleware {

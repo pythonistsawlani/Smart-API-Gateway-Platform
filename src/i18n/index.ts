@@ -5,12 +5,9 @@ import en from "./locales/en.json";
 
 function detectLocale(): string {
   // 1. Previously user-selected locale
-  const saved = localStorage.getItem("api-switch-locale");
+  const saved = localStorage.getItem("smart-api-gateway-locale");
   if (saved === "zh" || saved === "en") return saved;
-  // 2. Browser/system language
-  const nav = navigator.language || "";
-  if (nav.startsWith("zh")) return "zh";
-  // 3. Default to English for all other languages
+  // 2. Default to English
   return "en";
 }
 

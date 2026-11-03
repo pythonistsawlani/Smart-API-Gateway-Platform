@@ -1,5 +1,5 @@
 {
-  "name": "api-switch",
+  "name": "smart-api-gateway",
   "version": "0.8.42",
   "description": "Personal API Management & Forwarding Center",
   "private": true,
@@ -17,7 +17,9 @@
     "android:build": "tauri android build --features mobile --apk",
     "tauri": "tauri",
     "typecheck": "tsc --noEmit",
-    "verify:android-release-signing": "node scripts/verify-android-release-signing.cjs"
+    "verify:android-release-signing": "node scripts/verify-android-release-signing.cjs",
+    "build:run": "pnpm build && start src-tauri/target/release/smart-api-gateway.exe",
+    "start": "start src-tauri/target/release/smart-api-gateway.exe"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

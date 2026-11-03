@@ -146,7 +146,7 @@ export function MainShell({
         <Button variant="ghost" size="icon" className="h-9 w-9" onClick={() => setMobileMenuOpen((open) => !open)}>
           {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </Button>
-        <div className="min-w-0 truncate text-base font-semibold tracking-wide">API-SWITCH</div>
+        <div className="min-w-0 truncate text-base font-semibold tracking-wide">SMART API GATEWAY</div>
         {statusDots}
       </header>
 
@@ -161,7 +161,7 @@ export function MainShell({
           <div className="flex items-center gap-2 px-4 py-4">
             <Power className={cn('h-5 w-5', proxyStatus?.running ? 'text-green-500' : 'text-red-500')} />
             <span className="truncate text-lg font-semibold">
-              {proxyStatus?.running ? `API Switch: ${proxyStatus.port}` : 'API Switch'}
+              {proxyStatus?.running ? `Smart API Gateway: ${proxyStatus.port}` : 'Smart API Gateway'}
             </span>
           </div>
 

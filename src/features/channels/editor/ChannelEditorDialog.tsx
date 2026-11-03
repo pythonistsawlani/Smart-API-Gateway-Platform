@@ -21,7 +21,7 @@ import { useApiAdapter } from '@/lib/useApiAdapter';
 import { getChannelErrorMessage } from '../channelErrors';
 import type { ModelInfo, UpdateChannelParams, CreateChannelParams, FetchModelsResult, SaveChannelWithModelsParams } from '../types';
 import type { ChannelFormState, UrlProbeResult } from './types';
-import { DEFAULT_FORM, API_TYPES, channelToForm } from './types';
+import { DEFAULT_FORM, API_TYPES, channelToForm, UI_TO_BACKEND_API_TYPE } from './types';
 import { buildEntryCatalogMeta, formatReleaseDate } from './utils';
 
 type EditorModelInfo = ModelInfo & {
@@ -246,7 +246,7 @@ export const ChannelEditorDialog: React.FC<{
     setProbingUrl(true);
     const timer = setTimeout(async () => {
       try {
-        const result = await api.channels.probeUrl(form.base_url.trim(), form.api_type, primaryApiKey);
+        const result = await api.channels.probeUrl(form.base_url.trim(), UI_TO_BACKEND_API_TYPE[form.api_type] ?? form.api_type, primaryApiKey);
         if (probeSeqRef.current === seq) {
           setUrlProbe(result as UrlProbeResult);
           if (result.reachable) {
@@ -392,7 +392,8 @@ export const ChannelEditorDialog: React.FC<{
   };
 
   const fetchModelsByProtocol = async (apiType: string): Promise<{ result: FetchModelsResult; models: EditorModelInfo[] }> => {
-    const result = await api.channels.fetchModelsDirect(apiType, form.base_url, primaryApiKey, false, form.upstream_headers || undefined);
+    const backendApiType = UI_TO_BACKEND_API_TYPE[apiType] ?? apiType;
+    const result = await api.channels.fetchModelsDirect(backendApiType, form.base_url, primaryApiKey, false, form.upstream_headers || undefined);
     if (result.models.length > 0) {
       setAvailableProtocols(prev => Array.from(new Set([...prev, apiType])));
     }
@@ -494,13 +495,13 @@ export const ChannelEditorDialog: React.FC<{
     setModelTestResults({});
     const results: Record<string, { success: boolean; latency?: number; reason?: string; statusCode?: number }> = {};
     try {
-      await withTimeout(
+        await withTimeout(
         (async () => {
           for (const model of filteredModels) {
             if (testSeqRef.current !== seq) return;
             try {
               const result = await api.channels.testChannelDirect({
-                api_type: form.api_type,
+                api_type: UI_TO_BACKEND_API_TYPE[form.api_type] ?? form.api_type,
                 base_url: form.base_url,
                 api_key: primaryApiKey,
                 model: model.name,
@@ -516,7 +517,7 @@ export const ChannelEditorDialog: React.FC<{
           }
         })(),
         10_000,
-        t('channel.editor.testModelsTimeout', '模型Test timeout'),
+        t('channel.editor.testModelsTimeout', 'Test timeout'),
       );
     } catch (err) {
       if (testSeqRef.current === seq) {
@@ -540,24 +541,24 @@ export const ChannelEditorDialog: React.FC<{
   const handleSave = async () => {
     if (saving || fetchingModels) return;
     if (!canSave) {
-      toast.error(t('channel.editor.requiredFieldsHint', '请确保填写有效的 Base URL 与 API Key 后再保存'));
+      toast.error(t('channel.editor.requiredFieldsHint', 'Please fill in a valid Base URL and API Key before saving'));
       return;
     }
 
-    // 验证 upstream_headers JSON
+    // Validate upstream_headers JSON
     if (form.upstream_headers.trim()) {
       try {
         const parsed = JSON.parse(form.upstream_headers);
         if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-          toast.error('Header injection config必须是有效的 JSON 对象');
+          toast.error(t('channel.editor.headerInjectionInvalidObject', 'Header injection config must be a valid JSON object'));
           return;
         }
         if (!Object.values(parsed).every((value) => typeof value === 'string')) {
-          toast.error('Header name and value must be strings');
+          toast.error(t('channel.editor.headerInjectionInvalidType', 'Header name and value must be strings'));
           return;
         }
       } catch {
-        toast.error('Header injection config包含Invalid JSON format');
+        toast.error(t('channel.editor.headerInjectionInvalidJson', 'Header injection config is not a valid JSON format'));
         return;
       }
     }
@@ -575,7 +576,7 @@ export const ChannelEditorDialog: React.FC<{
         const saveParams: SaveChannelWithModelsParams = {
           id: form.id || undefined,
           name: name,
-          api_type: form.api_type,
+          api_type: UI_TO_BACKEND_API_TYPE[form.api_type] ?? form.api_type,
           base_url: form.base_url,
           api_key: key,
           notes: form.notes,
@@ -601,10 +602,10 @@ export const ChannelEditorDialog: React.FC<{
       }
 
       if (successNames.length > 0 && keys.length > 1) {
-        toast.success(t('channel.editor.batchSaveSummary', '批量创建完成：成功 {{success}} 个，失败 {{failed}} 个', { success: successNames.length, failed: failedNames.length }));
+        toast.success(t('channel.editor.batchSaveSummary', 'Batch save completed: {{success}} succeeded, {{failed}} failed', { success: successNames.length, failed: failedNames.length }));
       }
       if (successNames.length === 0 && failedNames.length > 0) {
-        throw new Error(t('channel.editor.batchSaveAllFailed', '批量创建全部失败'));
+        throw new Error(t('channel.editor.batchSaveAllFailed', 'All model creation and saves failed'));
       }
 
       await onSaved();
@@ -644,7 +645,7 @@ return (
         </DialogHeader>
 
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
-          {/* 渠道信息区 */}
+          {/* Channel info section */}
           <div className="min-w-0 space-y-4 rounded-md border border-border/60 p-3 sm:p-4">
 
             <div className="space-y-2">
@@ -682,7 +683,7 @@ return (
                   id="channel-baseurl"
                   value={form.base_url}
                   onChange={(event) => setValue('base_url', event.target.value)}
-                  placeholder={t('channel.form.placeholderBaseUrl')}
+                  placeholder={form.api_type === 'other' ? 'https://api-inference.huggingface.co/models/YOUR_MODEL/v1/chat/completions' : t('channel.form.placeholderBaseUrl')}
                   className={urlProbe ? (urlProbe.reachable ? 'pr-24 border-green-500/50 focus-visible:ring-green-500/30' : 'pr-12 border-red-500/50 focus-visible:ring-red-500/30') : 'pr-8'}
                 />
                 <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-1 pointer-events-none">
@@ -695,7 +696,15 @@ return (
                   ) : null}
                 </div>
               </div>
+              {form.api_type === 'other' && (
+                <p className="text-[11px] text-muted-foreground leading-snug">
+                  ⚡ <strong>Other (Exact URL)</strong>: Enter the complete API endpoint URL. The request will be sent directly to this URL without any path appended.
+                  <br />
+                  Example for Hugging Face: <code className="text-xs bg-muted px-1 rounded">https://api-inference.huggingface.co/models/meta-llama/Meta-Llama-3-8B-Instruct/v1/chat/completions</code>
+                </p>
+              )}
             </div>
+
 
             <div className="space-y-2">
               <Label htmlFor="channel-apikey">{t('channel.editor.apiKey')}</Label>
@@ -705,7 +714,7 @@ return (
                   rows={1}
                   value={form.api_key}
                   onChange={(event) => setValue('api_key', event.target.value)}
-                  placeholder={channel ? undefined : t('channel.editor.multiKeyPlaceholder', '每行一个 API Key；获取模型使用第一行，保存时按行批量创建')}
+                  placeholder={channel ? undefined : t('channel.editor.multiKeyPlaceholder', 'One API Key per line. First line is used to fetch models. Saves will batch create channels.')}
                   className="flex min-h-9 w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 pr-20 text-sm shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
                   style={{ WebkitTextSecurity: showApiKey ? 'none' : 'disc' } as React.CSSProperties}
                 />
@@ -732,7 +741,7 @@ return (
               />
             </div>
 
-            {/* 获取模型按钮 - fill 宽度长条按钮，位于渠道区底部 */}
+            {/* Fetch models button - full width, at bottom of channel section */}
             <Button 
               className="w-full gap-1.5" 
               onClick={handleFetchModels} 
@@ -743,7 +752,7 @@ return (
             </Button>
           </div>
 
-          {/* 模型信息区 - 仅在展开时显示 */}
+          {/* Model info section - only show when expanded */}
           {showModels && (
             <div className="min-w-0 space-y-3 rounded-md border border-border/60 p-3 sm:p-4">
               {/* Time range selection: 3/6/12 months */}
@@ -761,7 +770,7 @@ return (
                 ))}
               </div>
 
-              {/* 搜索和操作按钮 */}
+              {/* Search and action buttons */}
               <div className="flex flex-wrap gap-2 items-center">
                 <Input 
                   id="model-search" 
@@ -771,7 +780,7 @@ return (
                   className="h-8 min-w-full flex-1 text-sm sm:min-w-48"
                 />
                 <Button size="sm" variant="outline" onClick={selectAllFiltered}>{t('common.selectAll', 'Select All')}</Button>
-                <Button size="sm" variant="outline" onClick={clearAllSelected}>{t('common.clear', '清除')}</Button>
+                <Button size="sm" variant="outline" onClick={clearAllSelected}>{t('common.clear')}</Button>
               </div>
 
               {/* Model list */}
@@ -790,9 +799,9 @@ return (
                         {testResult?.success === true && testResult.latency && (
                           <span className="text-xs ml-1">({(testResult.latency / 1000).toFixed(2)}s)</span>
                         )}
-                        {testResult?.success === false && (
-                          <span className="text-xs ml-1">({testResult.statusCode ? `HTTP ${testResult.statusCode}` : t('channel.editor.testFailed', '失败')})</span>
-                        )}
+                         {testResult?.success === false && (
+                           <span className="text-xs ml-1">({testResult.statusCode ? `HTTP ${testResult.statusCode}` : t('channel.editor.testFailed')})</span>
+                         )}
                       </span>
                       <span className="ml-auto shrink-0 text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
                         {model.sourceProtocol}
@@ -827,7 +836,7 @@ return (
                 </div>
               )}
 
-              {/* Test Models按钮 - fill 宽度 */}
+              {/* Test Models button - full width */}
               <Button 
                 className="w-full gap-1.5" 
                 variant="outline"

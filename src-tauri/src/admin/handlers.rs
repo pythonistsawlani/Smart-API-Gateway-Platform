@@ -103,6 +103,7 @@ pub async fn login(
                     locked_until: locked_until.timestamp(),
                 });
             }
+            // Lockout expired: reset failure count but keep lockout_count for backoff
             entry.locked_until = None;
             entry.count = 0;
         }
@@ -121,8 +122,11 @@ pub async fn login(
             .add_audit_log("admin_login_failed", "invalid credentials");
 
         if entry.count >= 6 {
-            let lock_expiry = now + chrono::Duration::minutes(5);
+            // Exponential backoff: 5min * 2^lockout_count, capped at 8 hours
+            let lockout_minutes = (5_u64).saturating_mul(2_u64.saturating_pow(entry.lockout_count)).min(480);
+            let lock_expiry = now + chrono::Duration::minutes(lockout_minutes as i64);
             entry.locked_until = Some(lock_expiry);
+            entry.lockout_count = entry.lockout_count.saturating_add(1);
             entry.count = 0;
             return Err(AdminError::RateLimited {
                 retry_after_seconds: (lock_expiry - now).num_seconds().max(1),
@@ -143,6 +147,9 @@ pub async fn login(
         .lock()
         .await
         .remove(&settings.web_admin_username);
+
+    // Clear any brute-force state for this username on successful login
+    state.login_failures.lock().await.remove(&payload.username);
 
     let token = Uuid::new_v4().to_string();
     let expires_at = chrono::Utc::now() + chrono::Duration::minutes(SESSION_TTL_MINUTES);

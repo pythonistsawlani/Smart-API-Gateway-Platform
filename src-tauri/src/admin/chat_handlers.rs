@@ -161,7 +161,7 @@ pub async fn test_chat(
         channel.upstream_headers.as_deref(),
     )
     .map_err(|e| {
-        let message = format!("Header 配置错误: {e}");
+        let message = format!("Header configuration error: {e}");
         let latency_ms = start.elapsed().as_millis() as i64;
         insert_test_usage_log(
             &db,

@@ -350,7 +350,7 @@ async fn try_chat_probe(
                     crate::services::channel_service::canonical_base_url_for_success(
                         api_type, base_url, &chat_url,
                     );
-                // Server responded 鈫?API works, return known models
+                // Server responded -> API works, return known models
                 if let Ok(text) = resp.text().await {
                     if let Some(m) = extract_models_from_json(&text) {
                         return Some(ProbeSuccess {

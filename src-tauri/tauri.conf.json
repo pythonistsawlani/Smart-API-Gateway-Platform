@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "API Switch",
+  "productName": "Smart API Gateway",
   "version": "0.8.42",
-  "identifier": "com.api-switch.app",
+  "identifier": "com.smart-api-gateway.app",
   "build": {
     "beforeDevCommand": "pnpm dev:renderer",
     "devUrl": "http://localhost:1420",
@@ -12,12 +12,13 @@
   "app": {
     "windows": [
       {
-        "title": "API Switch",
+        "label": "main",
+        "title": "Smart API Gateway",
         "width": 1100,
         "height": 750,
         "minWidth": 800,
         "minHeight": 600,
-        "visible": false
+        "visible": true
       }
     ],
     "security": {

@@ -10,6 +10,7 @@ use tokio::sync::{Mutex, RwLock};
 pub struct LoginFailureState {
     pub count: u32,
     pub locked_until: Option<chrono::DateTime<chrono::Utc>>,
+    pub lockout_count: u32,
 }
 
 #[derive(Clone)]
@@ -80,7 +81,7 @@ mod tests {
         app_handle: Option<crate::AppEventHandle>,
     ) -> AdminState {
         let db_path = std::env::temp_dir().join(format!(
-            "api-switch-admin-state-test-{}-{}.db",
+            "smart-api-gateway-admin-state-test-{}-{}.db",
             std::process::id(),
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
         ));
@@ -102,7 +103,7 @@ mod tests {
 
     #[test]
     fn server_api_requires_runtime_state() {
-        let state = test_admin_state(None, Some(crate::AppEventHandle));
+        let state = test_admin_state(None, None);
 
         let err = match state.server_api() {
             Ok(_) => panic!("missing runtime should fail"),

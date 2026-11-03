@@ -199,7 +199,7 @@ pub struct FetchModelsResult {
     pub auto_saved: bool,
 }
 
-// Service functions 鈥?thin wrappers around existing logic
+// Service functions - thin wrappers around existing logic
 
 #[derive(Serialize)]
 pub struct TestChannelResult {
@@ -522,7 +522,7 @@ pub async fn fetch_models(
                 message,
                 warning: endpoint_corrected.then(|| {
                     format!(
-                        "Endpoint correction suggested: {} {} 鈫?{} {}. Review and save manually.",
+                        "Endpoint correction suggested: {} {} -> {} {}. Review and save manually.",
                         channel.api_type,
                         original_base_url,
                         guess.detected_type,
@@ -537,7 +537,7 @@ pub async fn fetch_models(
         Err(error) => {
             let warning = endpoint_corrected.then(|| {
                 format!(
-                    "Endpoint correction suggested: {} {} 鈫?{} {}. Models were not saved automatically because fetch failed.",
+                    "Endpoint correction suggested: {} {} -> {} {}. Models were not saved automatically because fetch failed.",
                     channel.api_type,
                     original_base_url,
                     guess.detected_type,
@@ -1154,8 +1154,6 @@ async fn try_models_endpoint(
     let resp = req.send().await.map_err(|e| {
             if e.is_timeout() {
                 ModelsEndpointError::Timeout(e.to_string())
-            } else if e.is_connect() || e.is_request() {
-                ModelsEndpointError::Network(e.to_string())
             } else {
                 ModelsEndpointError::Network(e.to_string())
             }
@@ -1384,7 +1382,7 @@ pub async fn test_channel_chat(
                 success: false,
                 latency_ms: latency,
                 status_code: None,
-                message: format!("Header 配置错误: {e}"),
+                message: format!("Header configuration error: {e}"),
             };
         }
     };
@@ -1550,7 +1548,7 @@ mod tests {
             ),
         ];
 
-        let selected = select_preferred_endpoint_candidate(&candidates).expect("应选择可达候选");
+        let selected = select_preferred_endpoint_candidate(&candidates).expect("Should select reachable candidate");
 
         assert_eq!(selected.scope, EndpointCandidateScope::UserUrl);
         assert_eq!(selected.status, EndpointCandidateStatus::Reachable);

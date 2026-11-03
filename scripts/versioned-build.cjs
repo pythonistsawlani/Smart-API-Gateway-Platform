@@ -23,7 +23,7 @@ function timestamp() {
 const version = pkg.version;
 const stamp = timestamp();
 const exeName = `${pkg.name}_${version}_${stamp}.exe`;
-const source = path.join(root, "src-tauri", "target", "release", "api-switch.exe");
+const source = path.join(root, "src-tauri", "target", "release", "smart-api-gateway.exe");
 const outDir = path.join(root, "release");
 const target = path.join(outDir, exeName);
 

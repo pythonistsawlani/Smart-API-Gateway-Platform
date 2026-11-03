@@ -58,7 +58,7 @@ pub struct AppState {
 }
 
 #[cfg(all(feature = "tray", not(mobile)))]
-pub(crate) const TRAY_ID: &str = "api-switch-tray";
+pub(crate) const TRAY_ID: &str = "smart-api-gateway-tray";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -69,7 +69,7 @@ pub fn run() {
         mode_source
     );
 
-    // 鏃犳闈㈢幆澧?鈫?headless 妯″紡锛堝彧鍚姩杞彂+Web锛屼笉璧?Tauri GUI锛?
+    // No desktop environment -> headless mode (only start proxy+Web, do not start Tauri GUI)
     if should_run_headless(runtime_mode, mode_source) {
         run_headless();
         return;
@@ -98,7 +98,19 @@ fn run_gui(runtime_mode: RuntimeMode) {
 
             let mut settings_cache = db.get_settings().unwrap_or_default();
             admin::apply_admin_env(&mut settings_cache);
-            // 鐗堟湰鍙峰悓姝ワ細纭繚 DB 涓?app_version 涓庡疄闄呯紪璇戠増鏈竴鑷?
+            // Safe-by-default: generate a random admin password on first run
+            // or when the legacy admin/admin default is still active.
+            match db.ensure_admin_credentials(&mut settings_cache) {
+            Ok(Some(generated)) => {
+                log::warn!(
+                    "Generated a new Web Admin password: {generated}. \
+                     Change it in Settings after the first login."
+                );
+            }
+            Ok(None) => {}
+            Err(e) => log::error!("Failed to ensure admin credentials: {e}"),
+        }
+            // Version sync: ensure DB app_version matches actual build version
             let compiled_version = env!("CARGO_PKG_VERSION");
             if settings_cache.app_version != compiled_version {
                 settings_cache.app_version = compiled_version.to_string();
@@ -257,10 +269,13 @@ fn configure_platform_shell(app: &mut tauri::App) {
         // If tray build fails, fall back to Standalone behavior (skip tray/window but continue)
         match build_tray_menu(app.handle()) {
             Ok(tray_menu) => {
-                match tauri::tray::TrayIconBuilder::with_id(TRAY_ID)
-                    .icon(app.default_window_icon().cloned().unwrap())
+                let mut tray_builder = tauri::tray::TrayIconBuilder::with_id(TRAY_ID)
                     .menu(&tray_menu)
-                    .show_menu_on_left_click(true)
+                    .show_menu_on_left_click(true);
+                if let Some(icon) = app.default_window_icon() {
+                    tray_builder = tray_builder.icon(icon.clone());
+                }
+                match tray_builder
                     .on_tray_icon_event(|tray, event| match event {
                         tauri::tray::TrayIconEvent::Click { .. } => {
                             tray_refresh::mark_tray_interaction();
@@ -297,8 +312,11 @@ fn configure_platform_shell(app: &mut tauri::App) {
         // Show or keep hidden based on settings (only if tray succeeded)
         // Note: We still try to show the window even if tray failed, but the window close handler won't work properly
         if let Some(window) = app.get_webview_window("main") {
-            if !settings.start_minimized {
+            if settings.start_minimized {
+                let _ = window.hide();
+            } else {
                 let _ = window.show();
+                let _ = window.set_focus();
             }
 
             // Intercept window close -> hide to tray instead of exiting
@@ -390,7 +408,7 @@ fn tray_debounce_check() -> bool {
         return false;
     };
     if now.duration_since(*last).as_millis() < TRAY_DEBOUNCE_MS as u128 {
-        return false; // 闃叉姈锛?00ms 鍐呬笉閲嶅閲嶅缓
+        return false; // Debounce: do not rebuild within 500ms
     }
     *last = now;
     true
@@ -459,17 +477,17 @@ fn handle_tray_menu_event(app: &tauri::AppHandle, event_id: &str) {
     }
 }
 
-/// 妫€娴嬫槸鍚﹁繘鍏?headless 妯″紡
+/// Check whether to enter headless mode
 fn should_run_headless(mode: RuntimeMode, source: ModeSource) -> bool {
     match source {
-        // 鐢ㄦ埛鏄庣‘鎸囧畾浜?--headless/--nodisktop 鎴?API_SWITCH_HEADLESS=1
+        // User explicitly specified --headless/--nodesktop or API_SWITCH_HEADLESS=1
         ModeSource::Cli | ModeSource::Env => mode == RuntimeMode::Standalone,
-        // 娌℃寚瀹氬弬鏁帮紝鑷姩妫€娴嬫闈㈢幆澧?
+        // No parameters specified, auto-detect desktop environment
         ModeSource::Auto => !has_desktop(),
     }
 }
 
-/// 妗岄潰鐜妫€娴嬶紙浠?Linux 闇€瑕佹鏌ワ紝Win/Mac 榛樿鏈夋闈級
+/// Desktop environment check (only Linux needs to check, Win/Mac default to desktop)
 fn has_desktop() -> bool {
     #[cfg(mobile)]
     {
@@ -485,7 +503,7 @@ fn has_desktop() -> bool {
     }
 }
 
-/// 鏃犲ご妯″紡鍏ュ彛锛氬彧鍚姩杞彂+Web锛屼笉璧?Tauri GUI
+/// Headless mode entry: only start proxy+Web, do not start Tauri GUI
 fn run_headless() {
     use admin::AdminState;
     use tokio::sync::RwLock;
@@ -493,12 +511,24 @@ fn run_headless() {
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
 
     rt.block_on(async {
-        // DB 鍒濆鍖?
+        // DB initialization
         let db = Database::open().expect("Failed to open database");
         db.create_tables().expect("Failed to create tables");
         let mut settings = db.get_settings().unwrap_or_default();
         admin::apply_admin_env(&mut settings);
-        // 鐗堟湰鍙峰悓姝?
+        // Safe-by-default: generate a random admin password on first run
+        // or when the legacy admin/admin default is still active.
+        match db.ensure_admin_credentials(&mut settings) {
+            Ok(Some(generated)) => {
+                log::warn!(
+                    "Generated a new Web Admin password: {generated}. \
+                     Change it in Settings after the first login."
+                );
+            }
+            Ok(None) => {}
+            Err(e) => log::error!("Failed to ensure admin credentials: {e}"),
+        }
+        // Version sync
         let compiled_version = env!("CARGO_PKG_VERSION");
         if settings.app_version != compiled_version {
             settings.app_version = compiled_version.to_string();
@@ -508,7 +538,7 @@ fn run_headless() {
         let settings = Arc::new(RwLock::new(settings));
         let db = Arc::new(db);
 
-        // AppState锛堜笉闇€瑕?Tauri锛?
+        // AppState (does not require Tauri)
         let app_state = AppState {
             db: db.clone(),
             settings: settings.clone(),
@@ -519,8 +549,8 @@ fn run_headless() {
             runtime_mode: RuntimeMode::Standalone,
         };
 
-        // 鍚姩杞彂锛坅pp_handle = None锛?
-        // 鏃犲ご妯″紡锛氬己鍒跺紑鍚?Web Admin锛屼笉绠￠厤缃噷鏄?0 杩樻槸 1
+        // Start proxy (app_handle = None)
+        // Headless mode: force enable Web Admin regardless of whether config is 0 or 1
         {
             let mut w = settings.write().await;
             w.web_admin_enabled = true;
@@ -563,13 +593,13 @@ fn run_headless() {
         println!("============================================================");
         println!("  Press Ctrl+C to stop");
 
-        // 绛夊緟 Ctrl+C
+        // Wait for Ctrl+C
         tokio::signal::ctrl_c()
             .await
             .expect("Failed to listen for ctrl+c");
         println!("\nShutting down...");
 
-        // 浼橀泤鍋滄浠ｇ悊
+        // Gracefully stop proxy
         {
             let mut proxy_guard = app_state.proxy.write().await;
             if let Some(server) = proxy_guard.take() {

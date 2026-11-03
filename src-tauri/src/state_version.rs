@@ -17,17 +17,17 @@ fn version_ref(module: &str) -> &AtomicU64 {
     }
 }
 
-/// 递增指定模块的版本号。每次数据写入后调用。
+/// Increment version number of the specified module. Called after each data write.
 pub fn bump(module: &str) {
     version_ref(module).fetch_add(1, Ordering::Release);
 }
 
-/// 返回指定模块的当前版本号
+/// Return current version number of the specified module
 pub fn current(module: &str) -> u64 {
     version_ref(module).load(Ordering::Acquire)
 }
 
-/// 返回所有模块的版本号（供 HTTP handler 使用）
+/// Return version numbers of all modules (for HTTP handler use)
 pub fn all() -> HashMap<&'static str, u64> {
     let mut m = HashMap::new();
     m.insert("log", LOG_VERSION.load(Ordering::Acquire));
@@ -37,7 +37,7 @@ pub fn all() -> HashMap<&'static str, u64> {
     m
 }
 
-/// 所有模块的版本号响应结构体
+/// Response struct for version numbers of all modules
 #[derive(Debug, Clone, Serialize)]
 pub struct StatVersionsResponse {
     pub log: u64,

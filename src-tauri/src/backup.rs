@@ -53,7 +53,7 @@ fn backup_database(db_path: &Path) -> Result<(), AppError> {
     let db_file_name = db_path
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or("api-switch.db");
+        .unwrap_or("smart-api-gateway.db");
     let target_db_path = today_dir.join(db_file_name);
 
     // Copy main database file

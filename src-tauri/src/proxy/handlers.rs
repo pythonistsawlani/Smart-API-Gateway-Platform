@@ -5,17 +5,46 @@ use super::protocol::{
     openai_to_claude_response, openai_to_gemini_response, transform_openai_sse_to_claude_stream,
     transform_openai_sse_to_gemini_stream,
 };
+use super::rate_limiter::RateLimitConfig;
 use super::router;
 use super::server::ProxyState;
-use axum::extract::{Path, Query, State};
+use crate::database::AccessKey;
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
-/// Gemini 单模型格式（用于 /v1beta/models/{model}）
+/// Enforce rate limits for an inference request.
+///
+/// Identity is derived from the client IP (via `ConnectInfo`), the presented
+/// access key (when any), and the requested model. The two-pass check in
+/// `RateLimiter::check` guarantees an exhausted dimension never partially
+/// consumes budget on other dimensions.
+async fn enforce_rate_limit(
+    state: &ProxyState,
+    client_ip: Option<&str>,
+    access_key: Option<&AccessKey>,
+    model: &str,
+) -> Result<(), ProxyError> {
+    let cfg = RateLimitConfig::from_settings(&*state.settings.read().await);
+    if let Some(exceeded) = state.rate_limiter.check(
+        &cfg,
+        client_ip,
+        access_key.map(|ak| ak.key.as_str()).filter(|k| !k.is_empty()),
+        Some(model),
+    ) {
+        return Err(ProxyError::RateLimited {
+            retry_after_secs: exceeded.retry_after_secs,
+        });
+    }
+    Ok(())
+}
+
+/// Gemini single model format (used for /v1beta/models/{model})
 fn gemini_single_model_item(entry: &crate::database::ApiEntry) -> Value {
     let token_limit = parse_context_limit(entry);
     json!({
@@ -30,17 +59,60 @@ fn gemini_single_model_item(entry: &crate::database::ApiEntry) -> Value {
     })
 }
 
-fn normalize_requested_model(model: Option<&str>) -> String {
-    let trimmed = model.unwrap_or("auto").trim();
-    if trimmed.is_empty() {
-        "auto".to_string()
-    } else {
-        trimmed.to_string()
+/// Max length of a model name accepted by the proxy.
+pub const MODEL_NAME_MAX_LEN: usize = 128;
+
+/// Validate a model identifier supplied by the client.
+///
+/// Rejects empty names, path traversal (`..`), absolute-path prefixes,
+/// control/whitespace characters, and anything outside the conservative
+/// safe charset (`[A-Za-z0-9]` plus `- _ . / : @ + ( )`).
+pub fn validate_model_name(model: &str) -> Result<(), ProxyError> {
+    if model.is_empty() {
+        return Err(ProxyError::BadRequest("model must not be empty".to_string()));
     }
+    if model.len() > MODEL_NAME_MAX_LEN {
+        return Err(ProxyError::BadRequest(format!(
+            "model exceeds maximum length of {MODEL_NAME_MAX_LEN} characters"
+        )));
+    }
+    if model.contains("..") {
+        return Err(ProxyError::BadRequest(
+            "model must not contain '..'".to_string(),
+        ));
+    }
+    if model.starts_with('/') || model.starts_with('\\') {
+        return Err(ProxyError::BadRequest(
+            "model must not start with '/' or '\\'".to_string(),
+        ));
+    }
+    if model.chars().any(|c| {
+        c.is_control() || c.is_whitespace() || !(c.is_alphanumeric() || "._-/:@+()".contains(c))
+    }) {
+        return Err(ProxyError::BadRequest(
+            "model contains invalid characters".to_string(),
+        ));
+    }
+    Ok(())
 }
 
-/// 识别 forwarder 返回的 Gemini 同协议直穿响应。
-/// 直穿响应已经是 Gemini 原生 JSON/SSE，handler 不应再做 OpenAI→Gemini 转换。
+/// Normalize the requested model, validating it for security.
+///
+/// Empty/`auto` inputs resolve to the `"auto"` sentinel (unvalidated, it is
+/// an internal keyword); everything else is lowercased and checked against
+/// `validate_model_name`.
+fn normalize_requested_model(model: Option<&str>) -> Result<String, ProxyError> {
+    let trimmed = model.unwrap_or("auto").trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
+        return Ok("auto".to_string());
+    }
+    let normalized = trimmed.to_ascii_lowercase();
+    validate_model_name(&normalized)?;
+    Ok(normalized)
+}
+
+/// Identify Gemini same-protocol passthrough responses returned by the forwarder.
+/// Passthrough response is already native Gemini JSON/SSE; handler should not perform OpenAI->Gemini conversion.
 fn is_gemini_passthrough_response(resp: &axum::response::Response) -> bool {
     resp.headers()
         .get("x-api-switch-gemini-passthrough")
@@ -61,7 +133,7 @@ async fn load_sorted_entries(
 fn dedup_models_by_name(
     mut entries: Vec<crate::database::ApiEntry>,
 ) -> Vec<crate::database::ApiEntry> {
-    // 按分组+模型名校验去重，确保相同模型在不同分组下分别保留
+    // Deduplicate by group + model name, ensuring identical models in different groups are preserved separately
     let mut seen = HashSet::new();
     entries.retain(|entry| {
         let group = entry
@@ -238,6 +310,10 @@ pub async fn handle_chat_completions(
     State(state): State<ProxyState>,
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
+    let client_ip = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip().to_string());
     let (parts, body) = request.into_parts();
     let headers = &parts.headers;
 
@@ -257,19 +333,27 @@ pub async fn handle_chat_completions(
     let body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse JSON: {e}")))?;
 
-    // 保存原始 OpenAI 请求（用于同协议直穿）
+    // Save raw OpenAI request (for same-protocol passthrough)
     let mut body_with_raw = body.clone();
     if let Some(obj) = body_with_raw.as_object_mut() {
         obj.insert("__as_raw_openai_req".to_string(), body.clone());
     }
 
     let requested_model =
-        normalize_requested_model(body_with_raw.get("model").and_then(|m| m.as_str()));
+        normalize_requested_model(body_with_raw.get("model").and_then(|m| m.as_str()))?;
 
     let is_stream = body_with_raw
         .get("stream")
         .and_then(|s| s.as_bool())
         .unwrap_or(false);
+
+    // Rate limiting: IP + access key + model dimensions.
+    if let Err(rate_error) =
+        enforce_rate_limit(&state, client_ip.as_deref(), access_key.as_ref(), &requested_model)
+            .await
+    {
+        return Err(rate_error);
+    }
 
     // Resolve target entries
     // - AUTO: only enabled entries enter the auto pool
@@ -316,6 +400,10 @@ pub async fn handle_messages(
     State(state): State<ProxyState>,
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
+    let client_ip = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip().to_string());
     let (parts, body) = request.into_parts();
     let headers = &parts.headers;
 
@@ -338,19 +426,27 @@ pub async fn handle_messages(
     // Convert Claude format to OpenAI format for internal routing
     let mut openai_body = claude_to_openai_request(&body);
 
-    // 同协议直通：保留原始 Claude 请求体，供 forwarder 在上游同为 Claude/Anthropic 时
-    // 原样直送，避免 Claude→OpenAI→Claude 双重翻译损耗（含 mid-conversation system 位置）。
+    // Same-protocol passthrough: preserve raw Claude request body for forwarder when upstream is Claude/Anthropic
+    // to pass directly, avoiding double translation loss (including mid-conversation system positions).
     if let Some(obj) = openai_body.as_object_mut() {
         obj.insert("__as_raw_claude_req".to_string(), body.clone());
     }
 
     let requested_model =
-        normalize_requested_model(openai_body.get("model").and_then(|m| m.as_str()));
+        normalize_requested_model(openai_body.get("model").and_then(|m| m.as_str()))?;
 
     let is_stream = openai_body
         .get("stream")
         .and_then(|s| s.as_bool())
         .unwrap_or(false);
+
+    // Rate limiting: IP + access key + model dimensions.
+    if let Err(rate_error) =
+        enforce_rate_limit(&state, client_ip.as_deref(), access_key.as_ref(), &requested_model)
+            .await
+    {
+        return Err(rate_error);
+    }
 
     // Resolve target entries (same logic as chat completions)
     let all_entries = state.db.get_entries_for_routing()?;
@@ -385,8 +481,8 @@ pub async fn handle_messages(
     )
     .await?;
 
-    // 同协议直通：响应已是 Claude 原生格式（forwarder 跳过了转换），直接回传，
-    // 不能再做 OpenAI→Claude 二次转换。
+    // Same-protocol passthrough: response is already native Claude format (forwarder skipped conversion), return directly,
+    // avoid secondary OpenAI->Claude conversion.
     if response
         .headers()
         .contains_key("x-api-switch-claude-passthrough")
@@ -508,9 +604,9 @@ pub async fn handle_list_models_azure(
 
 /// Handle /v1beta/models/{model}:{action} (Gemini native)
 ///
-/// 支持 action:
-/// - `generateContent`        — 非流式内容生成（已有）
-/// - `streamGenerateContent`  — 流式内容生成（新增，OpenAI SSE → Gemini SSE 转换）
+/// Supported actions:
+/// - `generateContent`        - Non-streaming content generation
+/// - `streamGenerateContent`  - Streaming content generation (OpenAI SSE -> Gemini SSE conversion)
 pub async fn handle_gemini_native(
     State(state): State<ProxyState>,
     Path(rest): Path<String>,
@@ -520,10 +616,26 @@ pub async fn handle_gemini_native(
         return Err(ProxyError::Internal("Invalid Gemini path".to_string()));
     };
 
+    // Access key enforcement + rate limiting (single entry point).
+    let client_ip = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip().to_string());
+    let access_key = auth::extract_access_key(request.headers(), &state)
+        .await
+        .map_err(|err| match err {
+            crate::error::AppError::Validation(_) => ProxyError::Unauthorized,
+            other => ProxyError::from(other),
+        })?;
+    let requested_model = normalize_requested_model(Some(model))?;
+    enforce_rate_limit(&state, client_ip.as_deref(), access_key.as_ref(), &requested_model).await?;
+
     match action {
-        "generateContent" => handle_gemini_generate_content(State(state), model, request).await,
+        "generateContent" => {
+            handle_gemini_generate_content(State(state), model, access_key, request).await
+        }
         "streamGenerateContent" => {
-            handle_gemini_stream_generate_content(State(state), model, request).await
+            handle_gemini_stream_generate_content(State(state), model, access_key, request).await
         }
         _ => Err(ProxyError::Internal(format!(
             "Unsupported Gemini action: {action}"
@@ -531,10 +643,11 @@ pub async fn handle_gemini_native(
     }
 }
 
-/// 非流式 Gemini 内容生成（:generateContent）
+/// Non-streaming Gemini content generation (:generateContent)
 async fn handle_gemini_generate_content(
     State(state): State<ProxyState>,
     model: &str,
+    access_key: Option<AccessKey>,
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
     let (parts, body) = request.into_parts();
@@ -549,7 +662,7 @@ async fn handle_gemini_generate_content(
 
     let openai_body = gemini_to_openai_request(&body);
 
-    // 保存原始 Gemini 请求（用于同协议直穿）
+    // Save raw Gemini request (for same-protocol passthrough)
     let mut openai_body = openai_body;
     if let Some(obj) = openai_body.as_object_mut() {
         obj.insert("__as_raw_gemini_req".to_string(), body.clone());
@@ -557,7 +670,7 @@ async fn handle_gemini_generate_content(
 
     openai_body["model"] = json!(model);
 
-    let requested_model = normalize_requested_model(Some(model));
+    let requested_model = normalize_requested_model(Some(model))?;
 
     let all_entries = state.db.get_entries_for_routing()?;
     let auto_entries = state.db.get_enabled_entries_for_auto()?;
@@ -583,7 +696,7 @@ async fn handle_gemini_generate_content(
         &openai_body,
         headers,
         &requested_model,
-        None,
+        access_key.as_ref(),
         false,
         &middleware,
         caller_kind,
@@ -605,17 +718,18 @@ async fn handle_gemini_generate_content(
     Ok(Json(gemini_response).into_response())
 }
 
-/// 流式 Gemini 内容生成（:streamGenerateContent）
+/// Streaming Gemini content generation (:streamGenerateContent)
 ///
-/// 流程:
-/// 1. Gemini 原生请求 → OpenAI 格式
-/// 2. 强制 stream=true，通过 forwarder 转发
-/// 3. forwarder 返回 OpenAI SSE 流 (chat.completion.chunk)
-/// 4. 逐行转换为 Gemini 原生 SSE 格式 (candidates)
-/// 5. 返回流式响应给客户端
+/// Flow:
+/// 1. Native Gemini request -> OpenAI format
+/// 2. Force stream=true, forward via forwarder
+/// 3. forwarder returns OpenAI SSE stream (chat.completion.chunk)
+/// 4. Convert line-by-line to Gemini native SSE format (candidates)
+/// 5. Return streaming response to client
 async fn handle_gemini_stream_generate_content(
     State(state): State<ProxyState>,
     model: &str,
+    access_key: Option<AccessKey>,
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
     let (parts, body) = request.into_parts();
@@ -630,7 +744,7 @@ async fn handle_gemini_stream_generate_content(
 
     let openai_body = gemini_to_openai_request(&body);
 
-    // 保存原始 Gemini 请求（用于同协议直穿）
+    // Save raw Gemini request (for same-protocol passthrough)
     let mut openai_body = openai_body;
     if let Some(obj) = openai_body.as_object_mut() {
         obj.insert("__as_raw_gemini_req".to_string(), body.clone());
@@ -639,7 +753,7 @@ async fn handle_gemini_stream_generate_content(
     openai_body["model"] = json!(model);
     openai_body["stream"] = json!(true);
 
-    let requested_model = normalize_requested_model(Some(model));
+    let requested_model = normalize_requested_model(Some(model))?;
 
     let all_entries = state.db.get_entries_for_routing()?;
     let auto_entries = state.db.get_enabled_entries_for_auto()?;
@@ -665,7 +779,7 @@ async fn handle_gemini_stream_generate_content(
         &openai_body,
         headers,
         &requested_model,
-        None,
+        access_key.as_ref(),
         true, // is_stream = true
         &middleware,
         caller_kind,
@@ -676,16 +790,16 @@ async fn handle_gemini_stream_generate_content(
         return Ok(response);
     }
 
-    // 将 forwarder 返回的 OpenAI SSE 流转换为 Gemini 原生 SSE 流
+    // Convert OpenAI SSE stream returned by forwarder into native Gemini SSE stream
     transform_openai_sse_to_gemini_stream(response).map_err(ProxyError::from)
 }
 
-/// Handle GET /v1beta/models/{model} — Gemini 单模型详情
+/// Handle GET /v1beta/models/{model} - Gemini single model details
 pub async fn handle_gemini_model_detail(
     State(state): State<ProxyState>,
     Path(model): Path<String>,
 ) -> Result<Json<Value>, ProxyError> {
-    // 从 DB 查找该模型
+    // Find model from DB
     let entries = state.db.get_entries_for_routing()?;
     let model_lower = model.to_ascii_lowercase();
 
@@ -696,7 +810,7 @@ pub async fn handle_gemini_model_detail(
         return Ok(Json(gemini_single_model_item(entry)));
     }
 
-    // 没找到 → 返回 Gemini 格式的 404
+    // Not found -> return 404 in Gemini format
     Err(ProxyError::Internal(format!("Model '{}' not found", model)))
 }
 
@@ -710,7 +824,12 @@ pub async fn handle_azure_chat(
         .strip_suffix("/chat/completions")
         .ok_or_else(|| ProxyError::Internal("Invalid Azure path".to_string()))?
         .to_string();
+    validate_model_name(&deployment)?;
 
+    let client_ip = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip().to_string());
     let (parts, body) = request.into_parts();
     let headers = &parts.headers;
 
@@ -730,19 +849,27 @@ pub async fn handle_azure_chat(
 
     let openai_body = azure_to_openai_request(&body, &deployment);
 
-    // 保存原始 Azure 请求（用于同协议直穿）
+    // Save raw Azure request (for same-protocol passthrough)
     let mut openai_body = openai_body;
     if let Some(obj) = openai_body.as_object_mut() {
         obj.insert("__as_raw_azure_req".to_string(), body.clone());
     }
 
     let requested_model =
-        normalize_requested_model(openai_body.get("model").and_then(|m| m.as_str()));
+        normalize_requested_model(openai_body.get("model").and_then(|m| m.as_str()))?;
 
     let is_stream = openai_body
         .get("stream")
         .and_then(|s| s.as_bool())
         .unwrap_or(false);
+
+    // Rate limiting: IP + access key + model dimensions.
+    if let Err(rate_error) =
+        enforce_rate_limit(&state, client_ip.as_deref(), access_key.as_ref(), &requested_model)
+            .await
+    {
+        return Err(rate_error);
+    }
 
     let all_entries = state.db.get_entries_for_routing()?;
     let auto_entries = state.db.get_enabled_entries_for_auto()?;
@@ -819,7 +946,7 @@ mod tests {
             response_ms: None,
             provider_logo: None,
             release_date: Some("2024-01-02".to_string()),
-            model_meta_zh: Some("上下文 32k".to_string()),
+            model_meta_zh: Some("Context 32k".to_string()),
             model_meta_en: Some("Context 32k".to_string()),
             group_name: group_name.map(str::to_string),
             score: 0.0,
@@ -887,7 +1014,97 @@ mod tests {
         let second = sample_entry("2", "GPT-4O", "Second", None);
         let items = dedup_models_by_name(vec![first.clone(), second]);
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].id, first.id);
+    }
+
+    #[test]
+    fn validate_model_name_accepts_common_names() {
+        for name in [
+            "gpt-4o",
+            "claude-3.5-sonnet",
+            "gemini-2.5-flash",
+            "models/gemini-2.0-flash-001",
+            "azure/gpt-4o-mini",
+            "deepseek-r1",
+            "o1-pro",
+        ] {
+            assert!(validate_model_name(name).is_ok(), "should accept {name}");
+        }
+    }
+
+    #[test]
+    fn validate_model_name_rejects_empty_and_whitespace() {
+        assert!(matches!(validate_model_name(""), Err(ProxyError::BadRequest(_))));
+        assert!(matches!(
+            validate_model_name("  "),
+            Err(ProxyError::BadRequest(_))
+        ));
+        assert!(matches!(
+            validate_model_name("gpt 4o"),
+            Err(ProxyError::BadRequest(_))
+        ));
+        assert!(matches!(
+            validate_model_name("gpt\u{0000}"),
+            Err(ProxyError::BadRequest(_))
+        ));
+    }
+
+    #[test]
+    fn validate_model_name_rejects_path_traversal() {
+        for name in [
+            "..",
+            "a..b",
+            "../etc/passwd",
+            "..\\windows",
+            "/etc/passwd",
+            "\\boot",
+        ] {
+            assert!(
+                matches!(validate_model_name(name), Err(ProxyError::BadRequest(_))),
+                "should reject {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_model_name_rejects_invalid_characters() {
+        for name in [
+            "gpt$4o",
+            "model;drop",
+            "gpt'4o",
+            "gpt\"4o",
+            "gpt*4o",
+            "gpt?4o",
+        ] {
+            assert!(
+                matches!(validate_model_name(name), Err(ProxyError::BadRequest(_))),
+                "should reject {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_model_name_rejects_oversized_names() {
+        let long = "m".repeat(MODEL_NAME_MAX_LEN + 1);
+        assert!(matches!(
+            validate_model_name(&long),
+            Err(ProxyError::BadRequest(_))
+        ));
+        let boundary = "m".repeat(MODEL_NAME_MAX_LEN);
+        assert!(validate_model_name(&boundary).is_ok());
+    }
+
+    #[test]
+    fn normalize_requested_model_maps_empty_and_auto() {
+        assert_eq!(normalize_requested_model(None).unwrap(), "auto");
+        assert_eq!(normalize_requested_model(Some("")).unwrap(), "auto");
+        assert_eq!(normalize_requested_model(Some("  ")).unwrap(), "auto");
+        assert_eq!(normalize_requested_model(Some("AUTO")).unwrap(), "auto");
+    }
+
+    #[test]
+    fn normalize_requested_model_lowercases_valid_names() {
+        assert_eq!(normalize_requested_model(Some("GPT-4O")).unwrap(), "gpt-4o");
+        assert!(normalize_requested_model(Some("..")).is_err());
     }
 }
 
@@ -908,9 +1125,11 @@ pub enum ProxyError {
     #[error("Upstream error {status}: {message}")]
     Upstream { status: u16, message: String },
 
-    #[allow(dead_code)]
     #[error("Bad request: {0}")]
     BadRequest(String),
+
+    #[error("Rate limited: retry after {retry_after_secs}s")]
+    RateLimited { retry_after_secs: u64 },
 }
 
 impl IntoResponse for ProxyError {
@@ -930,6 +1149,23 @@ impl IntoResponse for ProxyError {
                 (code, message.clone())
             }
             ProxyError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+            ProxyError::RateLimited { retry_after_secs } => {
+                let body = json!({
+                    "error": {
+                        "message": format!(
+                            "Rate limit exceeded. Please retry in {retry_after_secs} seconds."
+                        ),
+                        "type": "rate_limit_exceeded",
+                        "code": StatusCode::TOO_MANY_REQUESTS.as_u16(),
+                    }
+                });
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [("retry-after", retry_after_secs.to_string())],
+                    Json(body),
+                )
+                    .into_response();
+            }
         };
 
         let body = json!({

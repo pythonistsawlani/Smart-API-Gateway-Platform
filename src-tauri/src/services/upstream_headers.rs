@@ -1,5 +1,5 @@
-//! 统一上游请求 Header 注入，从渠道配置的 upstream_headers JSON 中解析
-//! 键值对并注入到 reqwest 请求。系统只提供注入方法，不替用户判断注入是否正确。
+//! Unified upstream request Header injection, parsing key-value pairs
+//! from channel-configured upstream_headers JSON and injecting into reqwest requests.
 
 use crate::error::AppError;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -11,9 +11,9 @@ const SYSTEM_MANAGED_HEADERS: &[&str] = &[
     "connection",
 ];
 
-/// 将渠道 `upstream_headers` JSON（`{"Header-Name": "value", ...}`）注入到请求构建器。
+/// Inject channel `upstream_headers` JSON (`{"Header-Name": "value", ...}`) into request builder.
 ///
-/// JSON 必须是对象，且每个值必须是字符串；重复键以配置为准覆盖。
+/// JSON must be an object, and each value must be a string; duplicate keys overwrite according to config.
 pub(crate) fn apply_upstream_headers(
     builder: reqwest::RequestBuilder,
     upstream_headers: Option<&str>,
@@ -27,11 +27,11 @@ pub(crate) fn apply_upstream_headers(
     }
 
     let value = serde_json::from_str::<serde_json::Value>(raw).map_err(|e| {
-        AppError::Validation(format!("upstream_headers 必须是合法 JSON 对象：{e}"))
+        AppError::Validation(format!("upstream_headers must be a valid JSON object: {e}"))
     })?;
     let Some(map) = value.as_object() else {
         return Err(AppError::Validation(
-            "upstream_headers 必须是 JSON 对象".to_string(),
+            "upstream_headers must be a JSON object".to_string(),
         ));
     };
 
@@ -39,19 +39,19 @@ pub(crate) fn apply_upstream_headers(
     for (name, value) in map {
         let Some(value) = value.as_str() else {
             return Err(AppError::Validation(format!(
-                "upstream_headers 中的 {name} 必须是字符串"
+                "The {name} in upstream_headers must be a string"
             )));
         };
         let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
-            AppError::Validation(format!("upstream_headers 中的 Header 名称无效：{name} ({e})"))
+            AppError::Validation(format!("Invalid header name in upstream_headers: {name} ({e})"))
         })?;
         if SYSTEM_MANAGED_HEADERS.contains(&header_name.as_str()) {
             return Err(AppError::Validation(format!(
-                "该 Header 由系统管理，不能手动注入：{name}"
+                "This header is managed by the system and cannot be manually injected: {name}"
             )));
         }
         let header_value = HeaderValue::from_str(value).map_err(|e| {
-            AppError::Validation(format!("upstream_headers 中的 {name} 值无效：{e}"))
+            AppError::Validation(format!("Invalid value for {name} in upstream_headers: {e}"))
         })?;
         headers.insert(header_name, header_value);
     }
@@ -70,7 +70,7 @@ mod tests {
     #[test]
     fn apply_empty_payload_does_nothing() {
         let builder = new_builder();
-        // 验证函数不 panic
+        // Verify function does not panic
         let _ = apply_upstream_headers(builder, None).unwrap();
     }
 
@@ -90,14 +90,14 @@ mod tests {
     fn apply_invalid_json_returns_error() {
         let json = "{not valid}";
         let err = apply_upstream_headers(new_builder(), Some(json)).unwrap_err();
-        assert!(err.to_string().contains("upstream_headers 必须是合法 JSON 对象"));
+        assert!(err.to_string().contains("upstream_headers must be a valid JSON object"));
     }
 
     #[test]
     fn reject_system_managed_headers() {
         let json = r#"{"host": "example.com"}"#;
         let err = apply_upstream_headers(new_builder(), Some(json)).unwrap_err();
-        assert!(err.to_string().contains("该 Header 由系统管理"));
+        assert!(err.to_string().contains("managed by the system"));
     }
 
     #[test]
@@ -118,7 +118,7 @@ mod tests {
             .unwrap()
             .build()
             .expect("build request");
-        // 没有任何额外 Header
+        // No additional headers
         assert!(request.headers().is_empty());
     }
 
@@ -135,14 +135,14 @@ mod tests {
     fn reject_non_string_value() {
         let json = r#"{"x-custom": 123}"#;
         let err = apply_upstream_headers(new_builder(), Some(json)).unwrap_err();
-        assert!(err.to_string().contains("必须是字符串"));
+        assert!(err.to_string().contains("must be a string"));
     }
 
     #[test]
     fn reject_invalid_header_name() {
-        // Header 名称不能包含空格
+        // Header name cannot contain spaces
         let json = r#"{"foo bar": "value"}"#;
         let err = apply_upstream_headers(new_builder(), Some(json)).unwrap_err();
-        assert!(err.to_string().contains("Header 名称无效"));
+        assert!(err.to_string().contains("Invalid header name"));
     }
 }

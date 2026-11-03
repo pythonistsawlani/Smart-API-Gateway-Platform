@@ -24,9 +24,9 @@ impl Database {
         for channel in &transfer.data.channels {
             let channel_id = Uuid::new_v4().to_string();
             let available_models = serde_json::to_string(&channel.available_models)
-                .map_err(|e| AppError::Internal(format!("渠道可用模型序列化失败：{e}")))?;
+                .map_err(|e| AppError::Internal(format!("Failed to serialize channel available models: {e}")))?;
             let selected_models = serde_json::to_string(&channel.selected_models)
-                .map_err(|e| AppError::Internal(format!("渠道已选模型序列化失败：{e}")))?;
+                .map_err(|e| AppError::Internal(format!("Failed to serialize channel selected models: {e}")))?;
 
             tx.execute(
                 "INSERT INTO channels (
@@ -104,7 +104,7 @@ mod tests {
         let db = test_db();
         let old_channel = db
             .create_channel(
-                "旧渠道",
+                "Old Channel",
                 "openai",
                 "https://old.example.com",
                 "old-key",
@@ -115,7 +115,7 @@ mod tests {
         db.create_entry(
             &old_channel.id,
             "old-model",
-            "旧模型",
+            "Old Model",
             0,
             "",
             "",
@@ -127,7 +127,7 @@ mod tests {
 
         let source_channel = Channel {
             id: "source-channel-id".to_string(),
-            name: "新渠道".to_string(),
+            name: "New Channel".to_string(),
             api_type: "openai".to_string(),
             base_url: "https://new.example.com".to_string(),
             api_key: "new-key".to_string(),
@@ -139,7 +139,7 @@ mod tests {
             selected_models: vec!["new-model".to_string()],
             enabled: true,
             last_fetch_at: 999,
-            notes: "迁移渠道".to_string(),
+            notes: "Migrated Channel".to_string(),
             upstream_headers: Some(r#"{"x-custom":"abc"}"#.to_string()),
             response_ms: "999".to_string(),
             created_at: 1,
@@ -149,20 +149,20 @@ mod tests {
             id: "source-entry-id".to_string(),
             channel_id: "source-channel-id".to_string(),
             model: "new-model".to_string(),
-            display_name: "新模型".to_string(),
+            display_name: "New Model".to_string(),
             sort_index: 3,
             enabled: false,
             cooldown_until: Some(888),
             circuit_state: "open".to_string(),
             created_at: 3,
             updated_at: 4,
-            channel_name: Some("新渠道".to_string()),
+            channel_name: Some("New Channel".to_string()),
             channel_api_type: Some("openai".to_string()),
             owned_by: Some("openai".to_string()),
             response_ms: Some("777".to_string()),
             provider_logo: Some("logo".to_string()),
             release_date: Some("2025-01-01".to_string()),
-            model_meta_zh: Some("中文".to_string()),
+            model_meta_zh: Some("English".to_string()),
             model_meta_en: Some("English".to_string()),
             group_name: Some("coding".to_string()),
             score: 9.5,
@@ -180,13 +180,13 @@ mod tests {
         let entries = db.list_entries().unwrap();
         assert_eq!(channels.len(), 1);
         assert_eq!(entries.len(), 1);
-        assert_eq!(channels[0].name, "新渠道");
+        assert_eq!(channels[0].name, "New Channel");
         assert_eq!(channels[0].api_key, "new-key");
         assert_eq!(channels[0].last_fetch_at, 0);
         assert_eq!(channels[0].response_ms, "");
         assert_ne!(channels[0].id, "source-channel-id");
         assert_eq!(entries[0].model, "new-model");
-        assert_eq!(entries[0].display_name, "新模型");
+        assert_eq!(entries[0].display_name, "New Model");
         assert_eq!(entries[0].sort_index, 3);
         assert!(!entries[0].enabled);
         assert_eq!(entries[0].group_name.as_deref(), Some("coding"));
@@ -205,7 +205,7 @@ mod tests {
         let db = test_db();
         let old_channel = db
             .create_channel(
-                "旧渠道",
+                "Old Channel",
                 "openai",
                 "https://old.example.com",
                 "old-key-12345",
@@ -216,7 +216,7 @@ mod tests {
         db.create_entry(
             &old_channel.id,
             "old-model",
-            "旧模型",
+            "Old Model",
             0,
             "",
             "",
@@ -235,7 +235,7 @@ mod tests {
                  BEFORE INSERT ON channels
                  FOR EACH ROW
                  BEGIN
-                   SELECT RAISE(ABORT, '模拟导入插入失败');
+                   SELECT RAISE(ABORT, 'Simulated import insertion failure');
                  END;",
                 [],
             )
@@ -244,7 +244,7 @@ mod tests {
 
         let source_channel = Channel {
             id: "source-channel-id".to_string(),
-            name: "新渠道".to_string(),
+            name: "New Channel".to_string(),
             api_type: "openai".to_string(),
             base_url: "https://new.example.com".to_string(),
             api_key: "new-key".to_string(),
@@ -252,7 +252,7 @@ mod tests {
             selected_models: vec![],
             enabled: true,
             last_fetch_at: 999,
-            notes: "迁移渠道".to_string(),
+            notes: "Migrated Channel".to_string(),
             upstream_headers: None,
             response_ms: "999".to_string(),
             created_at: 1,
@@ -262,14 +262,14 @@ mod tests {
             id: "source-entry-id".to_string(),
             channel_id: "source-channel-id".to_string(),
             model: "new-model".to_string(),
-            display_name: "新模型".to_string(),
+            display_name: "New Model".to_string(),
             sort_index: 3,
             enabled: true,
             cooldown_until: None,
             circuit_state: "closed".to_string(),
             created_at: 3,
             updated_at: 4,
-            channel_name: Some("新渠道".to_string()),
+            channel_name: Some("New Channel".to_string()),
             channel_api_type: Some("openai".to_string()),
             owned_by: Some("openai".to_string()),
             response_ms: Some("777".to_string()),
@@ -292,7 +292,7 @@ mod tests {
         assert_eq!(entries.len(), before_entries.len());
         assert!(channels
             .iter()
-            .any(|channel| channel.name == "旧渠道" && channel.api_key == "old-key-12345"));
+            .any(|channel| channel.name == "Old Channel" && channel.api_key == "old-key-12345"));
         assert!(entries.iter().any(|entry| entry.model == "old-model"));
     }
 }

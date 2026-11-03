@@ -8,6 +8,7 @@
 use super::auth;
 use super::forwarder;
 use super::handlers::ProxyError;
+use super::rate_limiter::RateLimitConfig;
 use super::protocol::responses::{
     build_responses_base_response, build_responses_sse_http_response, responses_failed_response,
     responses_sse_done, responses_sse_line, responses_to_openai_chat_request,
@@ -15,22 +16,23 @@ use super::protocol::responses::{
 };
 use super::router;
 use super::server::ProxyState;
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use bytes::Bytes;
 use serde_json::{json, Value};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use uuid::Uuid;
 
 // ─── Handler ─────────────────────────────────────────────────────────
 
-/// 识别 forwarder 返回的“同协议透传响应”。
-/// 当上游 channel 本身也是 Responses API 时，forwarder 会把原始 Responses JSON/SSE
-/// 直接透传给 handler，此时 handler 不应再做 Responses↔Chat 的二次包装与转换。
+/// Identify same-protocol passthrough responses returned by the forwarder.
+/// When upstream channel itself is also Responses API, forwarder passes raw Responses JSON/SSE
+/// directly to handler; handler should not perform secondary wrapping/conversion between Responses and Chat.
 fn is_responses_passthrough_response(resp: &axum::response::Response) -> bool {
     resp.headers()
-        .get("x-api-switch-responses-passthrough")
+        .get("x-smart-api-gateway-responses-passthrough")
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.eq_ignore_ascii_case("true"))
 }
@@ -47,6 +49,10 @@ pub async fn handle_responses(
     State(state): State<ProxyState>,
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
+    let client_ip = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip().to_string());
     let (parts, body) = request.into_parts();
     let headers = &parts.headers;
 
@@ -92,9 +98,9 @@ pub async fn handle_responses(
 
     let (mut chat_body, is_stream, model) = responses_to_openai_chat_request(&req_body);
 
-    // 携带原始 Responses 请求，供 forwarder 在上游同为 Responses 协议时选择同协议透传。
-    // 这样可以避免 Responses→Chat→Responses 中间转换损耗 reasoning.summary、
-    // reasoning.encrypted_content 等原生字段。
+    // Attach raw Responses request for forwarder to select same-protocol passthrough when upstream is Responses.
+    // This avoids loss of reasoning.summary, encrypted_content, etc. through Responses->Chat->Responses conversion.
+    // native fields.
     if let Some(obj) = chat_body.as_object_mut() {
         obj.insert("__as_raw_responses_req".to_string(), req_body.clone());
     }
@@ -127,8 +133,22 @@ pub async fn handle_responses(
     let requested_model = if model == "auto" || model.is_empty() {
         "auto".to_string()
     } else {
+        super::handlers::validate_model_name(&model)?;
         model.to_string()
     };
+
+    // Rate limiting: IP + access key + model dimensions.
+    let cfg = RateLimitConfig::from_settings(&*state.settings.read().await);
+    if let Some(exceeded) = state.rate_limiter.check(
+        &cfg,
+        client_ip.as_deref(),
+        access_key.as_ref().map(|ak| ak.key.as_str()),
+        Some(&requested_model),
+    ) {
+        return Err(ProxyError::RateLimited {
+            retry_after_secs: exceeded.retry_after_secs,
+        });
+    }
 
     let all_entries = state.db.get_entries_for_routing()?;
     let auto_entries = state.db.get_enabled_entries_for_auto()?;
@@ -498,7 +518,7 @@ mod tests {
 
     #[test]
     fn test_convert_tools_non_function_skipped_for_chat_fallback() {
-        // 临时策略：Responses → Chat 降级路径不再盲透传非 function 工具。
+        // Temporary policy: Responses -> Chat fallback path no longer blindly passes non-function tools.
         let tools = vec![json!({ "type": "web_search", "search_context_size": "medium" })];
         let result = convert_tools(&tools);
         assert!(result.is_none());
@@ -506,7 +526,7 @@ mod tests {
 
     #[test]
     fn test_convert_tools_mixed_skips_non_function_for_chat_fallback() {
-        // function tools 正常转换，非 function tools 暂时跳过，避免 Chat 上游 schema 错误。
+        // function tools convert normally, non-function tools are skipped temporarily to avoid Chat upstream schema errors.
         let tools = vec![
             json!({ "type": "function", "name": "my_fn", "parameters": { "type": "object" } }),
             json!({ "type": "web_search" }),
@@ -560,8 +580,8 @@ mod tests {
     fn test_responses_to_openai_chat_request_injects_hosted_tool_prompt() {
         let req = json!({
             "model": "auto",
-            "instructions": "保持简洁。",
-            "input": "搜索最新资料",
+            "instructions": "Keep it concise.",
+            "input": "Search for latest info",
             "tools": [
                 { "type": "web_search" },
                 { "type": "function", "name": "get_weather", "parameters": { "type": "object" } }
@@ -572,7 +592,7 @@ mod tests {
         let messages = chat_body["messages"].as_array().unwrap();
         assert_eq!(messages[0]["role"], "system");
         let content = messages[0]["content"].as_str().unwrap();
-        assert!(content.contains("保持简洁。"));
+        assert!(content.contains("Keep it concise."));
         assert!(content.contains("web_search"));
         assert!(content.contains("server-side tool"));
         assert!(content.contains("Do not claim"));
@@ -688,7 +708,7 @@ mod tests {
         use super::super::sse::append_utf8_safe;
         let mut buffer = String::new();
         let mut remainder = Vec::new();
-        let text = "data: {\"delta\":\"你好世界\"}\n\n";
+        let text = "data: {\"delta\":\"Hello € world\"}\n\n";
         let bytes = text.as_bytes();
         let split_at = bytes.iter().position(|byte| *byte >= 0x80).unwrap() + 1;
 

@@ -26,6 +26,15 @@ pub struct AppSettings {
     pub web_admin_username: String,
     pub web_admin_password: String,
     pub web_admin_port: i32,
+    pub bind_external: bool,
+    pub rate_limit_enabled: bool,
+    pub rate_limit_rpm_per_ip: u32,
+    pub rate_limit_rpm_per_key: u32,
+    pub rate_limit_rpm_per_model: u32,
+    pub cors_allowed_origins: String,
+    pub tls_enabled: bool,
+    pub tls_cert_path: String,
+    pub tls_key_path: String,
     pub show_conversation_model: bool,
     pub disable_reasoning: bool,
     pub record_raw_protocol_data: bool,
@@ -40,7 +49,7 @@ impl Default for AppSettings {
         Self {
             proxy_enabled: true,
             listen_port: 9090,
-            access_key_required: false,
+            access_key_required: true,
             circuit_failure_threshold: 5,
             proxy_connect_timeout_secs: 30,
             circuit_recovery_secs: 300,
@@ -54,9 +63,18 @@ impl Default for AppSettings {
             default_sort_mode: "custom".to_string(),
             active_group: "auto".to_string(),
             web_admin_enabled: false,
-            web_admin_username: "admin".to_string(),
-            web_admin_password: "admin".to_string(),
+            web_admin_username: String::new(),
+            web_admin_password: String::new(),
             web_admin_port: 9099,
+            bind_external: false,
+            rate_limit_enabled: true,
+            rate_limit_rpm_per_ip: 120,
+            rate_limit_rpm_per_key: 240,
+            rate_limit_rpm_per_model: 600,
+            cors_allowed_origins: String::new(),
+            tls_enabled: false,
+            tls_cert_path: String::new(),
+            tls_key_path: String::new(),
             show_conversation_model: false,
             disable_reasoning: true,
             record_raw_protocol_data: false,
@@ -146,6 +164,33 @@ impl Database {
         if let Some(v) = kv.get("web_admin_port") {
             settings.web_admin_port = v.parse().unwrap_or(9099);
         }
+        if let Some(v) = kv.get("bind_external") {
+            settings.bind_external = v == "1";
+        }
+        if let Some(v) = kv.get("rate_limit_enabled") {
+            settings.rate_limit_enabled = v == "1";
+        }
+        if let Some(v) = kv.get("rate_limit_rpm_per_ip") {
+            settings.rate_limit_rpm_per_ip = v.parse().unwrap_or(120);
+        }
+        if let Some(v) = kv.get("rate_limit_rpm_per_key") {
+            settings.rate_limit_rpm_per_key = v.parse().unwrap_or(240);
+        }
+        if let Some(v) = kv.get("rate_limit_rpm_per_model") {
+            settings.rate_limit_rpm_per_model = v.parse().unwrap_or(600);
+        }
+        if let Some(v) = kv.get("cors_allowed_origins") {
+            settings.cors_allowed_origins = v.clone();
+        }
+        if let Some(v) = kv.get("tls_enabled") {
+            settings.tls_enabled = v == "1";
+        }
+        if let Some(v) = kv.get("tls_cert_path") {
+            settings.tls_cert_path = v.clone();
+        }
+        if let Some(v) = kv.get("tls_key_path") {
+            settings.tls_key_path = v.clone();
+        }
         if let Some(v) = kv.get("show_conversation_model") {
             settings.show_conversation_model = v == "1";
         }
@@ -220,6 +265,33 @@ impl Database {
             ("web_admin_password", &updates.web_admin_password),
             ("web_admin_port", &updates.web_admin_port.to_string()),
             (
+                "bind_external",
+                if updates.bind_external { "1" } else { "0" },
+            ),
+            (
+                "rate_limit_enabled",
+                if updates.rate_limit_enabled { "1" } else { "0" },
+            ),
+            (
+                "rate_limit_rpm_per_ip",
+                &updates.rate_limit_rpm_per_ip.to_string(),
+            ),
+            (
+                "rate_limit_rpm_per_key",
+                &updates.rate_limit_rpm_per_key.to_string(),
+            ),
+            (
+                "rate_limit_rpm_per_model",
+                &updates.rate_limit_rpm_per_model.to_string(),
+            ),
+            ("cors_allowed_origins", &updates.cors_allowed_origins),
+            (
+                "tls_enabled",
+                if updates.tls_enabled { "1" } else { "0" },
+            ),
+            ("tls_cert_path", &updates.tls_cert_path),
+            ("tls_key_path", &updates.tls_key_path),
+            (
                 "show_conversation_model",
                 if updates.show_conversation_model {
                     "1"
@@ -281,5 +353,34 @@ impl Database {
             rusqlite::params![key, value],
         )?;
         Ok(())
+    }
+
+    /// Ensure admin credentials are configured (safe-by-default).
+    ///
+    /// Generates a random Web Admin password on first run, or when the
+    /// legacy hardcoded `admin`/`admin` default is still active. Returns
+    /// `Some(new_password)` when a password was generated so the caller can
+    /// surface it to the user exactly once.
+    pub fn ensure_admin_credentials(&self, settings: &mut AppSettings) -> Result<Option<String>, AppError> {
+        let username = settings.web_admin_username.trim();
+        let password = settings.web_admin_password.trim();
+        let missing = username.is_empty() || password.is_empty();
+        let is_default = username.eq_ignore_ascii_case("admin") && password == "admin";
+        if !missing && !is_default {
+            return Ok(None);
+        }
+
+        let generated = uuid::Uuid::new_v4().to_string().replace('-', "").to_lowercase();
+        let new_username = if username.is_empty() {
+            "admin".to_string()
+        } else {
+            username.to_string()
+        };
+
+        settings.web_admin_username = new_username.clone();
+        settings.web_admin_password = generated.clone();
+        self.set_config_value("web_admin_username", &new_username)?;
+        self.set_config_value("web_admin_password", &generated)?;
+        Ok(Some(generated))
     }
 }

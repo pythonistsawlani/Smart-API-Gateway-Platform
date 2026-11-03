@@ -1,49 +1,47 @@
-//! SSE 流式处理公共设施
+//! Common utilities for SSE stream processing
 //!
-//! 把多处散落的 SSE 处理基础代码收敛到一处：
-//! - UTF-8 跨 chunk 切分安全拼接（`append_utf8_safe`）
-//! - SSE `data:` 前缀解析（`sse_data_payload`）
-//! - 流式缓冲区统一上限（`MAX_STREAM_BUFFER_BYTES`）
+//! Consolidates SSE stream processing logic in one place:
+//! - UTF-8 cross-chunk boundary safe concatenation (`append_utf8_safe`)
+//! - SSE `data:` prefix parsing (`sse_data_payload`)
+//! - Unified stream buffer limit (`MAX_STREAM_BUFFER_BYTES`)
 //!
-//! 在阶段 1 之前，这些逻辑在 4 处各写一份（其中 3 处用 `from_utf8_lossy`
-//! 导致多字节字符被切分时变成 `�`）。本模块把它们收敛到一处，所有入口
-//! 和转发层共用，消除 P3（UTF-8 切字）和重复代码。
+//! Consolidates common SSE processing logic, eliminating character splitting across chunks.
 //!
-//! 参考公理：我们是中转和翻译器，字节流在传输过程中不应被污染。
+//! Core axiom: as a proxy and translator, byte streams must not be corrupted during transit.
 
-/// 统一的流式缓冲区上限（10MB）。
+/// Unified stream buffer maximum capacity (10MB).
 pub const MAX_STREAM_BUFFER_BYTES: usize = 10 * 1024 * 1024;
 
-/// 判断当前缓冲状态是否超过统一上限。
+/// Check whether current buffer state exceeds unified limit.
 pub fn stream_buffer_exceeded(buffer: &str, remainder: &[u8], streamed_bytes: usize) -> bool {
     buffer.len() + remainder.len() + streamed_bytes > MAX_STREAM_BUFFER_BYTES
 }
 
-/// 把 `bytes` 追加到 `buffer`（UTF-8 字符串），保证多字节字符不被切坏。
+/// Append `bytes` to `buffer` (UTF-8 string), ensuring multi-byte characters are not corrupted.
 ///
-/// 原理：
-/// - `remainder` 存放上次调用留下的"不完整 UTF-8 字节"
-/// - 新 bytes 来了，先拼到 remainder 后面
-/// - 尝试把 remainder 解释为 UTF-8；合法前缀推入 buffer，剩余字节继续留存
-/// - 如果剩余字节明确无法构成合法 UTF-8（非"尾部待续"），用 lossy 兜底一次
+/// Principles:
+/// - `remainder` stores incomplete UTF-8 bytes from previous call
+/// - When new bytes arrive, append to remainder
+/// - Attempt to interpret remainder as UTF-8; push valid prefix into buffer, keep remaining bytes
+/// - If remaining bytes cannot form valid UTF-8, perform lossy fallback
 ///
-/// 这样跨 chunk 的中文、emoji 等多字节字符能被正确还原而不变成 `�`。
+/// This ensures multi-byte characters across chunks are properly restored without replacement characters.
 ///
-/// # 示例
+/// # Example
 ///
 /// ```ignore
-/// let text = "你好";                    // E4 BD A0 E5 A5 BD
+/// let text = "€€";                    // E2 82 AC E2 82 AC
 /// let bytes = text.as_bytes();
 /// let mut buffer = String::new();
 /// let mut remainder = Vec::new();
 ///
-/// // TCP 把"你"的 3 字节 + "好"的第 1 字节切到一起
+/// // TCP slices across multi-byte character boundary
 /// append_utf8_safe(&mut buffer, &mut remainder, &bytes[..4]);
-/// assert_eq!(buffer, "你");              // "好"的首字节留在 remainder
+/// assert_eq!(buffer, "€");              // trailing byte stays in remainder
 ///
-/// // 第二个 chunk 送来"好"的剩余 2 字节
+/// // Second chunk delivers remaining bytes
 /// append_utf8_safe(&mut buffer, &mut remainder, &bytes[4..]);
-/// assert_eq!(buffer, "你好");            // 完整还原
+/// assert_eq!(buffer, "€€");            // completely restored
 /// assert!(remainder.is_empty());
 /// ```
 pub fn append_utf8_safe(buffer: &mut String, remainder: &mut Vec<u8>, bytes: &[u8]) {
@@ -57,15 +55,15 @@ pub fn append_utf8_safe(buffer: &mut String, remainder: &mut Vec<u8>, bytes: &[u
         Err(err) => {
             let valid_up_to = err.valid_up_to();
             if valid_up_to > 0 {
-                // valid_up_to 由 Utf8Error 保证指向合法 UTF-8 边界
+                // valid_up_to guaranteed by Utf8Error to point to valid UTF-8 boundary
                 let valid = std::str::from_utf8(&remainder[..valid_up_to])
                     .expect("valid UTF-8 prefix guaranteed by valid_up_to contract");
                 buffer.push_str(valid);
                 remainder.drain(..valid_up_to);
             }
 
-            // error_len().is_some() 表示后面有明确的非法序列（不是简单的"尾部截断"）
-            // 此时只能 lossy 兜底，但这种情况在合法上游流里很罕见
+            // error_len().is_some() indicates an explicit invalid sequence (not a simple truncation)
+            // In this case lossy fallback is used, though rare in valid upstream streams
             if err.error_len().is_some() && !remainder.is_empty() {
                 buffer.push_str(&String::from_utf8_lossy(remainder));
                 remainder.clear();
@@ -74,19 +72,19 @@ pub fn append_utf8_safe(buffer: &mut String, remainder: &mut Vec<u8>, bytes: &[u
     }
 }
 
-/// 解析 SSE `data:` 行，返回 payload（不含 "data:" 前缀和可选的空格）。
+/// Parse SSE `data:` line, returning payload (without "data:" prefix and optional spaces).
 ///
-/// - `"data: {json}"` → `Some("{json}")`
-/// - `"data:{json}"` → `Some("{json}")`（紧凑形式）
-/// - `"event: message"` → `None`（非 data 行）
-/// - 空行 / 其他 → `None`
+/// - `"data: {json}"` -> `Some("{json}")`
+/// - `"data:{json}"` -> `Some("{json}")` (compact format)
+/// - `"event: message"` -> `None` (non-data line)
+/// - Empty lines / others -> `None`
 pub fn sse_data_payload(line: &str) -> Option<&str> {
     let payload = line.strip_prefix("data:")?;
     Some(payload.strip_prefix(' ').unwrap_or(payload))
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  测试
+// Tests
 // ═══════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
@@ -104,20 +102,20 @@ mod tests {
 
     #[test]
     fn append_utf8_safe_preserves_split_chinese() {
-        let text = "你好";
+        let text = "€€";
         let bytes = text.as_bytes();
         let mut buffer = String::new();
         let mut remainder = Vec::new();
 
-        // 在"你"的 3 字节 + "好"的 1 字节处切开（任意非边界位置）
+        // Slice at non-boundary position
         let split_at = bytes.iter().position(|b| *b >= 0x80).unwrap() + 1;
 
         append_utf8_safe(&mut buffer, &mut remainder, &bytes[..split_at]);
         assert!(
             !buffer.contains('\u{FFFD}'),
-            "不应在第一个 chunk 引入替换符"
+            "Should not introduce replacement characters in first chunk"
         );
-        assert!(!remainder.is_empty(), "不完整的字节应留在 remainder 中");
+        assert!(!remainder.is_empty(), "Incomplete bytes should remain in remainder");
 
         append_utf8_safe(&mut buffer, &mut remainder, &bytes[split_at..]);
         assert_eq!(buffer, text);
@@ -126,13 +124,13 @@ mod tests {
 
     #[test]
     fn append_utf8_safe_preserves_split_emoji() {
-        // emoji 是 4 字节 UTF-8，测试切在各种位置
+        // emoji is 4-byte UTF-8, test splitting across various positions
         let text = "🎉abc";
         let bytes = text.as_bytes();
         let mut buffer = String::new();
         let mut remainder = Vec::new();
 
-        // 切在 emoji 的第 2 个字节后（3 字节不完整）
+        // Split after 2nd byte of emoji
         append_utf8_safe(&mut buffer, &mut remainder, &bytes[..2]);
         assert!(!buffer.contains('\u{FFFD}'));
 
@@ -142,8 +140,8 @@ mod tests {
 
     #[test]
     fn append_utf8_safe_handles_many_small_chunks() {
-        // 模拟极端情况：每次只送 1 字节
-        let text = "你好世界🎉";
+        // Simulate extreme case: 1 byte per chunk
+        let text = "Hello € World 🎉";
         let bytes = text.as_bytes();
         let mut buffer = String::new();
         let mut remainder = Vec::new();

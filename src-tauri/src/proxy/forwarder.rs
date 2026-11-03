@@ -25,127 +25,138 @@ use tokio::time::sleep;
 const STREAMING_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const STREAMING_PING_INTERVAL: Duration = Duration::from_secs(10);
 
+/// Extract the correlation request ID from inbound headers. The proxy
+/// middleware guarantees this header is present (generating one if needed).
+fn client_request_id(headers: &HeaderMap) -> String {
+    headers
+        .get(crate::proxy::middleware::REQUEST_ID_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default()
+}
+
 // ============================================================================
-// 统一同协议直穿配置（Phase 1: Core Abstraction）
+// Unified same-protocol passthrough configuration (Phase 1: Core Abstraction)
 // ============================================================================
 
-/// 协议直穿配置
+/// Protocol passthrough configuration
 ///
-/// 定义单个协议的直穿行为：判定条件、字段名、响应头、中间件策略等。
-/// 所有协议使用统一的直穿机制，新增协议只需在配置表中添加一项。
+/// Defines passthrough behavior for an individual protocol: criteria, field names, response headers, middleware policy.
+/// All protocols use a unified passthrough mechanism; adding a protocol only requires an entry in the table.
 #[derive(Debug, Clone)]
 struct PassthroughConfig {
-    /// 调用方类型（入口协议）
+    /// Caller type (ingress protocol)
     caller_kind: CallerKind,
 
-    /// 上游协议类型列表（支持多个，如 Claude 支持 "claude" 和 "anthropic"）
+    /// Upstream protocol types list (supports multiples, e.g. Claude supports "claude" and "anthropic")
     upstream_types: &'static [&'static str],
 
-    /// 原始请求暂存字段名（如 "__as_raw_claude_req"）
+    /// Raw request scratch field name (e.g. "__as_raw_claude_req")
     raw_field: &'static str,
 
-    /// 响应头标记名（如 "x-api-switch-claude-passthrough"）
+    /// Response header marker name (e.g. "x-smart-api-gateway-claude-passthrough")
     header_name: HeaderName,
 
-    /// 是否跳过中间件注入
+    /// Whether to skip middleware injection
     ///
-    /// 语义说明：
-    /// - true: 跳过所有 ForwarderMiddleware（如 StreamOptionsMiddleware）
-    ///   典型场景：上游不认识 OpenAI 专有字段（如 Claude 不支持 stream_options）
-    /// - false: 执行所有中间件
-    ///   典型场景：上游原生兼容 OpenAI（如 OpenAI/Azure/Custom 支持 stream_options）
+    /// Semantics:
+    /// - true: skip all ForwarderMiddleware (such as StreamOptionsMiddleware)
+    ///   Typical scenario: upstream does not recognize OpenAI proprietary fields (e.g. Claude does not support stream_options)
+    /// - false: execute all middleware
+    ///   Typical scenario: upstream natively compatible with OpenAI (OpenAI/Azure/Custom support stream_options)
     ///
-    /// 注意：未来如需细粒度控制（如只跳过某个中间件），需扩展为位图或枚举集合
+    /// Note: can be extended to fine-grained bitmask or enum set if needed in future
     skip_middleware: bool,
 }
 
 impl PassthroughConfig {
-    /// 检查响应头是否匹配此配置
+    /// Check whether response headers match this configuration
     fn matches_header(&self, header_value: &str) -> bool {
         self.header_name.as_str() == header_value
     }
 }
 
-/// 协议直穿配置表
+/// Protocol passthrough configuration table
 ///
-/// 以 CallerKind 为 key，存储每个协议的直穿配置。
-/// 新增协议直穿只需在此表中添加一项，无需修改核心逻辑。
+/// Stored with CallerKind as key, maps passthrough configs for each protocol.
+/// Adding protocol passthrough only requires adding an entry here without modifying core logic.
 static PASSTHROUGH_CONFIGS: Lazy<HashMap<CallerKind, PassthroughConfig>> = Lazy::new(|| {
     let mut m = HashMap::new();
 
-    // Responses API 直穿配置
+    // Responses API passthrough config
     m.insert(
         CallerKind::Responses,
         PassthroughConfig {
             caller_kind: CallerKind::Responses,
             upstream_types: &["responses"],
             raw_field: "__as_raw_responses_req",
-            header_name: HeaderName::from_static("x-api-switch-responses-passthrough"),
-            skip_middleware: true, // Responses 专有字段，跳过 OpenAI 中间件
+            header_name: HeaderName::from_static("x-smart-api-gateway-responses-passthrough"),
+            skip_middleware: true, // Responses proprietary fields, skip OpenAI middleware
         },
     );
 
-    // Claude Messages 直穿配置
-    // 注意：数据库层会将 "claude" 规范化为 "anthropic"，因此只需匹配 "anthropic"
+    // Claude Messages passthrough config
+    // Note: Database normalizes "claude" to "anthropic", matching "anthropic" is sufficient
     m.insert(
         CallerKind::ClaudeMessages,
         PassthroughConfig {
             caller_kind: CallerKind::ClaudeMessages,
-            upstream_types: &["anthropic"], // 已包含 claude（规范化后）
+            upstream_types: &["anthropic"], // includes claude (normalized)
             raw_field: "__as_raw_claude_req",
-            header_name: HeaderName::from_static("x-api-switch-claude-passthrough"),
-            skip_middleware: true, // Claude 不认识 stream_options
+            header_name: HeaderName::from_static("x-smart-api-gateway-claude-passthrough"),
+            skip_middleware: true, // Claude does not recognize stream_options
         },
     );
 
-    // OpenAI Chat 直穿配置
-    // 注意：数据库层会将 "custom" 规范化为 "openai"，因此只需匹配 "openai"
+    // OpenAI Chat passthrough config
+    // Note: Database normalizes "custom" to "openai", matching "openai" is sufficient
     m.insert(
         CallerKind::OpenAiChat,
         PassthroughConfig {
             caller_kind: CallerKind::OpenAiChat,
-            upstream_types: &["openai"], // 已包含 custom（规范化后）
+            upstream_types: &["openai"], // includes custom (normalized)
             raw_field: "__as_raw_openai_req",
-            header_name: HeaderName::from_static("x-api-switch-openai-passthrough"),
-            skip_middleware: false, // 不跳过，stream_options 是 OpenAI 原生字段
+            header_name: HeaderName::from_static("x-smart-api-gateway-openai-passthrough"),
+            skip_middleware: false, // do not skip, stream_options is native OpenAI field
         },
     );
 
-    // Gemini Native 直穿配置
+    // Gemini Native passthrough config
     m.insert(
         CallerKind::GeminiNative,
         PassthroughConfig {
             caller_kind: CallerKind::GeminiNative,
             upstream_types: &["gemini"],
             raw_field: "__as_raw_gemini_req",
-            header_name: HeaderName::from_static("x-api-switch-gemini-passthrough"),
-            skip_middleware: true, // Gemini native 不认识 stream_options
+            header_name: HeaderName::from_static("x-smart-api-gateway-gemini-passthrough"),
+            skip_middleware: true, // Gemini native does not recognize stream_options
         },
     );
 
-    // Azure Chat 直穿配置
+    // Azure Chat passthrough config
     m.insert(
         CallerKind::AzureChat,
         PassthroughConfig {
             caller_kind: CallerKind::AzureChat,
             upstream_types: &["azure"],
             raw_field: "__as_raw_azure_req",
-            header_name: HeaderName::from_static("x-api-switch-azure-passthrough"),
-            skip_middleware: false, // 不跳过，Azure 兼容 OpenAI
+            header_name: HeaderName::from_static("x-smart-api-gateway-azure-passthrough"),
+            skip_middleware: false, // do not skip, Azure is OpenAI-compatible
         },
     );
 
     m
 });
 
-/// 判断是否启用同协议直穿
+/// Determine whether to enable same-protocol passthrough
 ///
-/// 检查三个条件：
-/// 1. 调用方类型在配置表中
-/// 2. 上游协议类型匹配配置
-/// 3. 请求体中存在原始请求暂存字段
+/// Check three conditions:
+/// 1. Caller type in config table
+/// 2. Upstream protocol type matches config
+/// 3. Raw request scratch field exists in request body
 ///
-/// 返回匹配的配置，或 None（不启用直穿）
+/// Return matching config or None (passthrough not enabled)
 fn should_passthrough(
     caller_kind: &CallerKind,
     upstream_api_type: &str,
@@ -153,34 +164,34 @@ fn should_passthrough(
 ) -> Option<&'static PassthroughConfig> {
     let config = PASSTHROUGH_CONFIGS.get(caller_kind)?;
 
-    // 检查上游类型是否匹配
+    // Check if upstream type matches
     if !config.upstream_types.contains(&upstream_api_type) {
         return None;
     }
 
-    // 检查是否存在原始请求暂存字段
+    // Check if raw request scratch field exists
     body.get(config.raw_field)?;
 
     Some(config)
 }
 
-/// 从响应头标记反查协议直穿配置
+/// Reverse lookup protocol passthrough config from response header marker
 ///
-/// 用于流式处理：根据响应头判断协议类型，避免硬编码字符串比较。
-/// 返回匹配的配置，或 None（非直穿响应）。
+/// Used for streaming: determines protocol type by header to avoid hardcoded string comparisons.
+/// Return matching config, or None (non-passthrough response).
 fn passthrough_config_from_header(header_value: &str) -> Option<&'static PassthroughConfig> {
     PASSTHROUGH_CONFIGS
         .values()
         .find(|config| config.matches_header(header_value))
 }
 
-/// 从中间态恢复原始请求体，并注入实际模型名
+/// Restore raw request body from intermediate state, injecting actual model name
 ///
-/// 用于同协议直穿：从中间态的暂存字段中恢复原始请求，
-/// 同时注入路由解析后的实际模型名（支持 AUTO 场景）。
+/// Used for same-protocol passthrough: restore raw request from scratch field
+/// and inject routed actual model name (supports AUTO scenario).
 ///
-/// 注意：如果暂存字段不存在（理论上不应出现，因为 should_passthrough 已检查），
-/// 则 fallback 到原始 body，但这表明配置逻辑存在漏洞。
+/// Note: If scratch field is missing,
+/// fallbacks to raw body.
 fn restore_raw_request(body: &Value, config: &PassthroughConfig, actual_model: &str) -> Value {
     let mut raw = body
         .get(config.raw_field)
@@ -188,19 +199,19 @@ fn restore_raw_request(body: &Value, config: &PassthroughConfig, actual_model: &
         .unwrap_or_else(|| body.clone());
 
     if let Some(obj) = raw.as_object_mut() {
-        // 注入实际模型名（关键：支持 AUTO 场景）
+        // Inject actual model name (supports AUTO scenario)
         obj.insert("model".to_string(), Value::String(actual_model.to_string()));
-        // 移除暂存字段
+        // Remove scratch field
         obj.remove(config.raw_field);
     }
 
     raw
 }
 
-/// 清理所有已知的暂存字段
+/// Clean up all known scratch fields
 ///
-/// 遍历配置表，移除所有协议的暂存字段，防止泄漏到上游。
-/// 新增协议后自动包含，无需手动维护清理列表。
+/// Iterate config table, removing all scratch fields to prevent leakage upstream.
+/// Automatically includes added protocols.
 fn clean_all_raw_fields(body: &mut Value) {
     if let Some(obj) = body.as_object_mut() {
         for config in PASSTHROUGH_CONFIGS.values() {
@@ -209,9 +220,9 @@ fn clean_all_raw_fields(body: &mut Value) {
     }
 }
 
-/// 为响应添加直穿标记头
+/// Add passthrough marker header to response
 ///
-/// 用于告知上层（handler）这是直穿响应，无需二次转换。
+/// Informs upper handler that this is a passthrough response, avoiding secondary conversion.
 fn mark_passthrough_response(response: &mut axum::response::Response, config: &PassthroughConfig) {
     response
         .headers_mut()
@@ -253,8 +264,8 @@ fn is_completed_stream_success(
     has_tool_calls: bool,
     completion_tokens: i64,
 ) -> bool {
-    // 仅在 HTTP 200、无 SSE 错误且存在有效输出时判定成功。
-    // 有效输出定义为：出现文本 delta、出现工具调用、或返回的 completion_tokens>0。
+    // Evaluated as successful only on HTTP 200, no SSE errors, and valid output present.
+    // Valid output defined as: text delta, tool calls, or completion_tokens > 0.
     status_code == 200
         && !has_sse_error
         && (has_text_delta || has_tool_calls || completion_tokens > 0)
@@ -276,10 +287,10 @@ fn is_recoverable_decode_timeout_after_stream_started(
     let stream_started =
         status_code == 200 && (first_token_ms > 0 || chunk_count > 0 || streamed_bytes > 0);
 
-    // 临时止血：HTTP 200 且已经开始推流后出现 body/decode timeout，
-    // 更像传输中途不完整，而不是模型、Token 或上游入口不可用。
-    // 本次请求仍记录失败，但不触发普通冷却/长期禁用阈值。
-    // 即使已经出现有效输出，也不应把长流尾部超时归类为入口不可用。
+    // Body/decode timeout after stream has begun with HTTP 200,
+    // indicates mid-transit truncation rather than model/token failure.
+    // Recorded as failure without triggering cooldown/disable thresholds.
+    // Long stream tail timeout is not classified as endpoint unavailability.
     stream_started && is_timeout && is_decode && !is_body && !has_sse_error
 }
 
@@ -309,11 +320,11 @@ fn is_decode_timeout_after_stream_started(
     )
 }
 
-/// 判断客户端断开的流是否算成功。
+/// Determine whether client-disconnected stream counts as success.
 ///
-/// 下游主动断开本身不是上游故障；但 HTTP 200 不能单独证明模型已有效输出。
-/// 对 dropped stream，只有观测到文本 delta、工具调用，或输出 token，才记为成功。
-/// 这避免 `200 + IN/OUT 0 + has_valid_output=false` 被 success=1 掩盖。
+/// Downstream disconnect is not upstream failure; but HTTP 200 alone does not prove valid output.
+/// For dropped streams, counts as success only if text delta, tool call, or output token was observed.
+/// Prevents 200 + IN/OUT 0 + has_valid_output=false being masked by success=1.
 fn is_dropped_stream_success(
     status_code: i32,
     prompt_tokens: i64,
@@ -321,7 +332,7 @@ fn is_dropped_stream_success(
     has_text_delta: bool,
     has_tool_calls: bool,
 ) -> bool {
-    let _ = prompt_tokens; // prompt_tokens 是输入消耗，不代表下游收到有效输出。
+    let _ = prompt_tokens; // prompt_tokens is input consumption, not indicating downstream received valid output.
     status_code == 200 && (has_text_delta || has_tool_calls || completion_tokens > 0)
 }
 
@@ -332,8 +343,8 @@ fn should_persist_raw_protocol_for_log(
     has_text_delta: bool,
     has_tool_calls: bool,
 ) -> bool {
-    // 用户明确要求：错误的 IN/OUT 0/无有效输出场景必须保留原始记录，
-    // 便于复现调试；正常 200 成功不保留，避免日志膨胀。
+    // Explicit requirement: error IN/OUT 0 / no valid output scenarios must preserve raw records
+    // for reproduction and debugging; normal 200 successes do not preserve them to avoid log bloat.
     if success {
         return false;
     }
@@ -371,9 +382,9 @@ fn attempt_path_json(attempts: &[AttemptInfo]) -> String {
     .unwrap_or_else(|_| "[]".to_string())
 }
 
-/// 把 attempt_path JSON 渲染成短文本，便于直接展示在 content 头部。
-/// 输出形如 `api.beyfish/gpt-5.5[200] -> other/x[502]`，
-/// 多个失败重试用 `->` 连接；解析失败时回退原文。
+/// Render attempt_path JSON as short text for display at content head.
+/// Output format: `api.beyfish/gpt-5.5[200] -> other/x[502]`,
+/// multiple retries joined with `->`; falls back to raw text on parse error.
 fn format_attempt_path_short(attempt_path: Option<&str>) -> String {
     let Some(json_str) = attempt_path else {
         return String::new();
@@ -755,6 +766,7 @@ struct StreamLogGuard {
     db: Arc<Database>,
     app_handle: Option<crate::AppEventHandle>,
     access_key: Option<AccessKey>,
+    request_id: String,
     entry: ApiEntry,
     requested_model: String,
     prompt_tokens: Arc<AtomicI64>,
@@ -770,7 +782,7 @@ struct StreamLogGuard {
     upstream_url: String,
     response_headers: reqwest::header::HeaderMap,
     raw_protocol: Option<Value>,
-    /// 空流检测冷却时长（秒），取自 settings.circuit_recovery_secs
+    /// Empty stream detection cooldown in seconds, from settings.circuit_recovery_secs
     empty_stream_cooldown_secs: i64,
 }
 
@@ -821,6 +833,7 @@ impl Drop for StreamLogGuard {
             let db = self.db.clone();
             let app_handle = self.app_handle.clone();
             let access_key = self.access_key.clone();
+            let request_id = self.request_id.clone();
             let entry = self.entry.clone();
             let requested_model = self.requested_model.clone();
             let status_code = self.status_code;
@@ -839,6 +852,7 @@ impl Drop for StreamLogGuard {
                     &db,
                     &app_handle,
                     access_key.as_ref(),
+                    &request_id,
                     &entry,
                     &requested_model,
                     true,
@@ -855,11 +869,11 @@ impl Drop for StreamLogGuard {
                     raw_protocol.as_ref(),
                 );
 
-                // 空流检测：上游返回 200 但 SSE 流中无实际输出数据。
-                // 此类流被丢弃后，如果仅标记 success=true 不触发冷却，
-                // 坏通道会持续留在路由池中反复被选中，导致下游反复中断。
-                // 此处设置 DB cooldown 让路由跳过该 entry，但不递增
-                // failure_counts，防止触发 6h 自动禁用。
+                // Empty stream detection: upstream returned 200 but SSE stream contained no actual output data.
+                // If dropped stream is marked success=true without triggering cooldown,
+                // bad channels repeatedly get selected, causing repeated downstream interruptions.
+                // Set DB cooldown so routing skips this entry, without incrementing
+                // failure_counts, preventing 6h auto-disable.
                 if status_code == 200
                     && byte_total < 512
                     && chunk_total < 5
@@ -903,6 +917,9 @@ pub async fn forward_with_retry(
 ) -> Result<axum::response::Response, ProxyError> {
     let mut last_error: Option<(String, u16)> = None;
     let mut attempts: Vec<AttemptInfo> = Vec::new();
+    // Correlation ID for this request: always present because the proxy
+    // middleware generates one when the client did not send its own.
+    let request_id = client_request_id(original_headers);
 
     for entry in entries {
         let start = Instant::now();
@@ -928,6 +945,7 @@ pub async fn forward_with_retry(
             middleware,
             &caller_kind,
             original_headers,
+            &request_id,
         )
         .await
         {
@@ -943,6 +961,7 @@ pub async fn forward_with_retry(
                         &state.db,
                         &state.app_handle,
                         access_key,
+                        &request_id,
                         entry,
                         requested_model,
                         is_stream,
@@ -977,6 +996,7 @@ pub async fn forward_with_retry(
                     &state.db,
                     &state.app_handle,
                     access_key,
+                    &request_id,
                     entry,
                     requested_model,
                     is_stream,
@@ -1016,9 +1036,9 @@ pub async fn forward_with_retry(
                 } else if disable_by_status {
                     disable_entry(state, entry).await;
                 } else {
-                    // 既未命中禁用状态码，也未命中已知 disable_keywords：
-                    // 记录状态码+原文，供分析后增补 disable_keywords（keyword 越健壮，
-                    // 落入重试环节的失败越少）。状态码一并记录，便于判断哪类值得重试。
+                    // Neither hit disable status codes nor known disable_keywords:
+                    // record status code + raw text to analyze for supplementing disable_keywords,
+                    // minimizing retries. Status code recorded to evaluate retryability.
                     let status_for_log = if status > 0 { status } else { 0 };
                     if should_record_keyword_candidate(status_for_log, &e, &settings) {
                         keyword_log::record_unknown_failure(status_for_log, &e).await;
@@ -1158,6 +1178,7 @@ async fn forward_single(
     middleware: &[Arc<dyn super::middleware::ForwarderMiddleware>],
     caller_kind: &CallerKind,
     original_headers: &HeaderMap,
+    request_id: &str,
 ) -> Result<ForwardResult, ForwardError> {
     let settings = state.settings.read().await.clone();
     let channel = state
@@ -1168,12 +1189,12 @@ async fn forward_single(
     let adapter = get_adapter(&channel.api_type);
     let url = adapter.build_chat_url(&channel.base_url, &entry.model);
 
-    // 统一直穿判定（Phase 2: 替换现有实现）
+    // Unified passthrough determination (Phase 2)
     let passthrough_config = should_passthrough(caller_kind, &channel.api_type, body);
 
-    // 处理 disable_reasoning
-    // 设计说明：直穿场景下也应用 disable_reasoning，因为这是用户全局设置，
-    // 不应因协议直穿而绕过。直穿只是避免协议转换损耗，不是跳过业务逻辑。
+    // Handle disable_reasoning
+    // Design note: disable_reasoning applies in passthrough as a global user setting,
+    // and should not be bypassed. Passthrough avoids conversion loss without skipping business logic.
     let body_for_transform = if settings.disable_reasoning {
         let mut modified = body.clone();
         apply_disable_reasoning(&mut modified);
@@ -1183,7 +1204,7 @@ async fn forward_single(
     };
 
     let mut upstream_body = if let Some(config) = passthrough_config {
-        // 统一恢复逻辑：先恢复原始请求，再应用 disable_reasoning
+        // Unified recovery: restore raw request first, then apply disable_reasoning
         let mut restored = restore_raw_request(body, config, &entry.model);
         if settings.disable_reasoning {
             apply_disable_reasoning(&mut restored);
@@ -1195,7 +1216,7 @@ async fn forward_single(
         converted
     };
 
-    // 统一清理所有暂存字段
+    // Unified cleanup of all scratch fields
     clean_all_raw_fields(&mut upstream_body);
 
     clean_model_info_from_inbound_body(&mut upstream_body);
@@ -1205,7 +1226,7 @@ async fn forward_single(
         caller_kind: caller_kind.clone(),
         requested_model: Arc::<str>::from(requested_model.to_string()),
     };
-    // 根据配置决定是否跳过中间件
+    // Determine whether to skip middleware based on configuration
     if !passthrough_config.is_some_and(|c| c.skip_middleware) {
         for mw in middleware.iter() {
             mw.on_request(&mut upstream_body, &ctx);
@@ -1219,19 +1240,19 @@ async fn forward_single(
         )
         .json(&upstream_body);
 
-    // 同协议直通：透传客户端(真实 Claude Code CLI)的身份/能力头，使上游能识别
-    // CLI 身份（认证层）并开启对应能力（如 anthropic-beta 里的
-    // mid-conversation-system）。否则上游回退旧行为，拒收 messages 数组中的
-    // role:"system" → 400。注意：不透传 authorization（鉴权用渠道自己的 api_key），
-    // 也不透传 host/content-length/connection 等逐跳/长度相关头。
-    // 暂时保留 Claude 特殊处理（P1 再配置化）
+    // Same-protocol passthrough: forward client identity/capability headers (real Claude Code CLI) so upstream recognizes
+    // CLI identity (auth layer) and enables capabilities (such as
+    // mid-conversation-system in anthropic-beta). Otherwise upstream falls back and rejects
+    // role:"system" in messages array -> 400. Note: authorization is not forwarded (channel uses its own api_key),
+    // nor hop-by-hop/length headers like host/content-length/connection.
+    // Retain Claude handling temporarily
     if matches!(
         passthrough_config.map(|c| c.caller_kind),
         Some(CallerKind::ClaudeMessages)
     ) {
         const PASSTHROUGH_HEADER_PREFIXES: &[&str] = &["x-stainless-", "x-claude-code-"];
-        // 注意：不含 anthropic-version —— apply_auth 已设置（reqwest 的 header() 是
-        // 追加而非覆盖，重复透传会产生重复头）。仅透传 apply_auth 未设置的身份/能力头。
+        // Note: excludes anthropic-version - already set by apply_auth (reqwest header()
+        // appends rather than overwriting; duplicates avoided). Only forward identity/capability headers not set by apply_auth.
         const PASSTHROUGH_HEADER_EXACT: &[&str] = &["anthropic-beta", "user-agent", "x-app"];
         for (name, value) in original_headers.iter() {
             let n = name.as_str().to_ascii_lowercase();
@@ -1245,7 +1266,7 @@ async fn forward_single(
         }
     }
 
-    // 先透传客户端 Header，再按设置决定是否应用渠道 Header；同名时以渠道配置为准。
+    // Forward client headers first, then apply channel headers; duplicate names overwrite per channel config.
     if passthrough_config.is_none() || settings.passthrough_header_injection {
         request = crate::services::upstream_headers::apply_upstream_headers(
             request,
@@ -1254,13 +1275,22 @@ async fn forward_single(
         .map_err(|e| ForwardError::new(e.to_string(), 502, None))?;
     }
 
+    // Correlation: propagate the gateway request ID upstream so responses can
+    // be matched back to the client request, and raw protocol logs line up.
+    if !request_id.is_empty() {
+        request = request.header(
+            crate::proxy::middleware::REQUEST_ID_HEADER,
+            request_id,
+        );
+    }
+
     if is_stream {
         request = request.header("Accept", "text/event-stream");
         request = request.header("Accept-Encoding", "identity");
     }
 
-    // 始终在本次请求内临时构造 raw protocol 上下文；是否写入 DB 由失败/空输出
-    // 场景决定。这样错误 IN/OUT 0 能复现，正常 200 成功不会持久化 raw。
+    // Always construct raw protocol context temporarily; DB persistence is determined by failure/empty output
+    // scenarios. Error IN/OUT 0 is reproducible, normal 200 successes do not persist raw.
     let raw_protocol_request = Some(build_raw_protocol_request_log(
         caller_kind,
         requested_model,
@@ -1332,7 +1362,7 @@ async fn forward_single(
             middleware,
             &ctx,
         );
-        // 统一添加直穿响应头
+        // Unified addition of passthrough response headers
         if let Some(config) = passthrough_config {
             mark_passthrough_response(&mut response, config);
         }
@@ -1380,7 +1410,7 @@ async fn forward_single(
         let (prompt_tokens, completion_tokens, reasoning_tokens) =
             extract_usage_tokens(&response_body);
 
-        // 验证输出有效性（根据协议类型）
+        // Verify output validity (based on protocol type)
         let has_valid_output = if let Some(config) = passthrough_config {
             match config.caller_kind {
                 CallerKind::Responses => responses_response_has_valid_output(&response_body),
@@ -1400,7 +1430,7 @@ async fn forward_single(
         }
 
         let mut response = axum::Json(response_body).into_response();
-        // 统一添加直穿响应头
+        // Unified addition of passthrough response headers
         if let Some(config) = passthrough_config {
             mark_passthrough_response(&mut response, config);
         }
@@ -1417,8 +1447,8 @@ async fn forward_single(
 }
 
 fn extract_usage_tokens(body: &Value) -> (i64, i64, i64) {
-    // 兼容三种位置：OpenAI 顶层 usage、Responses 的 /response/usage、
-    // Anthropic message_start 的 /message/usage。
+    // Compatible with 3 locations: OpenAI top-level usage, Responses /response/usage,
+    // and Anthropic message_start /message/usage.
     let usage = body
         .get("usage")
         .or_else(|| body.pointer("/response/usage"))
@@ -1427,7 +1457,7 @@ fn extract_usage_tokens(body: &Value) -> (i64, i64, i64) {
         .and_then(|v| v.get("prompt_tokens"))
         .and_then(Value::as_i64)
         .unwrap_or_else(|| {
-            // Anthropic：input_tokens + 缓存 token（高缓存命中时 input_tokens 可能为 0）
+            // Anthropic: input_tokens + cache tokens (input_tokens may be 0 on high cache hit)
             anthropic_prompt_tokens(usage)
         });
     let completion_tokens = usage
@@ -1469,7 +1499,7 @@ fn nonstream_response_has_valid_output(body: &Value) -> bool {
             let has_function_call = message
                 .and_then(|msg| msg.get("function_call"))
                 .is_some_and(|function_call| !function_call.is_null());
-            // 推理模型可能返回 reasoning_content 而无 content
+            // Reasoning models may return reasoning_content without content
             let has_reasoning = message.is_some_and(|msg| {
                 msg.get("reasoning_content")
                     .and_then(Value::as_str)
@@ -1488,9 +1518,9 @@ fn nonstream_response_has_valid_output(body: &Value) -> bool {
         })
 }
 
-/// 校验直通的 Gemini 原生非流式响应是否有有效输出。
-/// Gemini generateContent 响应形如 `{"candidates":[{"content":{"parts":[...]}}]}`，
-/// 与 OpenAI 的 `choices[]` 结构不同，需独立判断。
+/// Verify whether passthrough native Gemini non-streaming response has valid output.
+/// Gemini generateContent response format: `{"candidates":[{"content":{"parts":[...]}}]}`,
+/// differs from OpenAI `choices[]` structure, evaluated independently.
 fn gemini_response_has_valid_output(body: &Value) -> bool {
     body.get("candidates")
         .and_then(Value::as_array)
@@ -1511,7 +1541,7 @@ fn gemini_response_has_valid_output(body: &Value) -> bool {
                                 part.get("inlineData").is_some_and(|v| !v.is_null());
                             let has_file_data = part.get("fileData").is_some_and(|v| !v.is_null());
 
-                            // 未知/未来 Gemini part 类型：保守视为有效，避免误判直通响应无效。
+                            // Unknown/future Gemini part type: conservatively treated as valid.
                             let has_unknown_nonempty_part = part.as_object().is_some_and(|obj| {
                                 obj.iter().any(|(key, value)| {
                                     key != "text"
@@ -1533,9 +1563,9 @@ fn gemini_response_has_valid_output(body: &Value) -> bool {
         })
 }
 
-/// 校验直通的 Claude 原生响应是否有有效输出。
-/// Claude 响应形如 `{"content":[{"type":"text"|"tool_use"|"thinking", ...}], ...}`，
-/// 与 OpenAI 的 `choices[]` 结构不同，需独立判断。
+/// Verify whether passthrough native Claude response has valid output.
+/// Claude response format: `{"content":[{"type":"text"|"tool_use"|"thinking", ...}], ...}`,
+/// differs from OpenAI `choices[]` structure, evaluated independently.
 fn claude_response_has_valid_output(body: &Value) -> bool {
     body.get("content")
         .and_then(Value::as_array)
@@ -1548,7 +1578,7 @@ fn claude_response_has_valid_output(body: &Value) -> bool {
                         .and_then(Value::as_str)
                         .is_some_and(|s| !s.is_empty()),
                     Some("tool_use") => true,
-                    // 未知/未来块类型：保守视为有效，避免误判直通响应无效
+                    // Unknown/future block type: conservatively treated as valid
                     Some(_) => true,
                     None => false,
                 }
@@ -1560,14 +1590,14 @@ fn request_uses_structured_output(body: &Value) -> bool {
     body.get("response_format").is_some()
 }
 
-/// 递归扫描 body 的任一位置是否存在 tool calling 相关字段。
+/// Recursively scan body for tool calling related fields.
 ///
-/// **保留但不在生产路径使用**——历史上 `should_append_model_info` 曾用此函数
-/// 在请求侧屏蔽 model 注入（commit 3f5825d），但这会误屏蔽所有 agent 客户端
-/// （Cursor / Claude Code 等几乎每次请求都带 `tools` 字段，即使本轮不实际调用）。
-/// 现在请求侧检查已撤销，真正的 tool-calling 屏蔽在响应侧 `has_tool_calls`。
+/// Retained but not in production path - historically should_append_model_info used this function
+/// to block model injection on request side (commit 3f5825d), which mistakenly blocked all agent clients
+/// (Cursor / Claude Code almost always send tools field, even when current turn does not invoke tools).
+/// Request side check has been removed; actual tool-calling check is on response side `has_tool_calls`.
 ///
-/// 函数保留供未来可能的请求侧精细化判断重用，不是死代码。
+/// Function retained for future fine-grained request side checks.
 #[allow(dead_code)]
 fn contains_tool_calling_field(value: &Value) -> bool {
     match value {
@@ -1600,24 +1630,24 @@ fn should_append_model_info(
     body: &Value,
     _caller_kind: &super::middleware::CallerKind,
 ) -> bool {
-    // 调试开关开启时，Responses 调用方也需要可见模型标记。
-    // 直通流走 Responses 原生 output_text.delta 注入；非直通转换路径仍由下游边界决定。
+    // When debug switch is on, Responses callers also need visible model tag.
+    // Passthrough stream uses native Responses output_text.delta injection.
     let setting_enabled = state
         .settings
         .try_read()
         .map(|settings| settings.show_conversation_model)
         .unwrap_or(true);
 
-    // 结构化输出（response_format=json_object/json_schema）必须屏蔽注入：
-    // 正文会被客户端当成 JSON 解析，追加 "model: xxx" 会破坏 JSON 合法性。
+    // Structured output (response_format=json_object/json_schema) must mask injection:
+    // content will be parsed as JSON by client; appending "model: xxx" corrupts JSON validity.
     //
-    // 工具调用上下文不在请求侧屏蔽：agent 客户端（Cursor、Claude Code 等）
-    // 几乎每次请求都带 `tools` 字段声明可用工具，即使本轮不实际调用。
-    // 如果在请求侧一律屏蔽，大部分 agent 场景永远看不到模型名。
-    // 真正的屏蔽发生在响应侧 `has_tool_calls`（参见 build_streaming_response
-    // 和 append_and_parse_sse / transform_sse_chunk 的 gate 条件）：
-    // 只有上游实际返回 tool_calls / function_call 时才跳过注入，避免 CALL
-    // 循环里累积多个 `model: xxx`。
+    // Tool calling context is not masked on request side: agent clients (Cursor, Claude Code, etc.)
+    // almost always send `tools` field, even when current turn does not invoke tools.
+    // Masking on request side would prevent agent clients from ever seeing model names.
+    // Actual masking occurs on response side `has_tool_calls` (see build_streaming_response
+    // and append_and_parse_sse / transform_sse_chunk gate conditions):
+    // only skip injection when upstream actually returns tool_calls / function_call,
+    // avoiding multiple `model: xxx` accumulations in CALL loops.
     setting_enabled && !request_uses_structured_output(body)
 }
 
@@ -1661,8 +1691,8 @@ fn build_streaming_response(
     let logged = Arc::new(AtomicBool::new(false));
     let model_info = model_info_label(entry.model.as_str(), entry.channel_name.as_deref());
 
-    // 判定协议类型（用于流式处理分支）
-    // 通过响应头反查配置，避免硬编码字符串
+    // Determine protocol type (for streaming branch)
+    // Reverse lookup config from response header, avoiding hardcoded strings
     let passthrough_protocol = passthrough_header.and_then(passthrough_config_from_header);
     let is_responses_passthrough = passthrough_protocol
         .map(|c| matches!(c.caller_kind, CallerKind::Responses))
@@ -1686,7 +1716,7 @@ fn build_streaming_response(
     let success_circuit_breakers = state.circuit_breakers.clone();
     let success_failure_counts = state.failure_counts.clone();
 
-    // 读取 settings 中的冷却时长，用于空流检测冷却
+    // Read cooldown duration from settings for empty stream cooldown
     let empty_stream_cooldown_secs: i64 = state
         .settings
         .try_read()
@@ -1699,6 +1729,7 @@ fn build_streaming_response(
         db: db.clone(),
         app_handle: app_handle.clone(),
         access_key: access_key.clone(),
+        request_id: String::new(),
         entry: entry.clone(),
         requested_model: requested_model.clone(),
         prompt_tokens: prompt_tokens.clone(),
@@ -1769,17 +1800,18 @@ fn build_streaming_response(
                                 raw_stream_snapshot.as_deref(),
                             )
                         })
-                    } else {
+} else {
                         None
                     };
-                    tokio::spawn(async move {
-                        log_usage(
-                            &db2,
-                            &ah2,
-                            ak2.as_ref(),
-                            &e2,
-                            &rm2,
-                            true,
+tokio::spawn(async move {
+                            log_usage(
+                                &db2,
+                                &ah2,
+                                ak2.as_ref(),
+                                "",
+                                &e2,
+                                &rm2,
+                                true,
                             pt,
                             ct,
                             0,
@@ -1870,15 +1902,16 @@ fn build_streaming_response(
                                         raw_stream_snapshot.as_deref(),
                                     )
                                 })
-                            } else {
-                                None
-                            };
-                            tokio::spawn(async move {
-                                log_usage(
-                                    &db2,
-                                    &ah2,
-                                    ak2.as_ref(),
-                                    &e2,
+} else {
+                        None
+                    };
+tokio::spawn(async move {
+log_usage(
+                                &db2,
+                                &ah2,
+                                ak2.as_ref(),
+                                "",
+                                &e2,
                                     &rm2,
                                     true,
                                     pt,
@@ -1935,8 +1968,8 @@ fn build_streaming_response(
                             return Poll::Pending;
                         }
                     } else if is_responses_passthrough {
-                        // Responses 原生直通流：扫描事件，在 response.completed 前注入一次
-                        // output_text.delta 模型标记。开关关闭、工具调用或无文本输出时不注入。
+                        // Responses native passthrough stream: scan events, inject once before response.completed
+                        // output_text.delta model tag. Do not inject when disabled, during tool calls, or without text output.
                         let saw_completed = scan_responses_passthrough_chunk(
                             &chunk,
                             &has_sse_error,
@@ -1961,8 +1994,8 @@ fn build_streaming_response(
                         }
                         return Poll::Ready(Some(Ok(chunk)));
                     } else if is_claude_passthrough {
-                        // Claude 原生直通流：扫描事件，在 message_stop 前注入一次
-                        // 模型名（Anthropic 格式）。有工具调用则跳过，防 CALL 循环刷屏。
+                        // Claude native passthrough stream: scan events, inject once before message_stop
+                        // model name (Anthropic format). Skip on tool calls to prevent repetitive injection in CALL loops.
                         let saw_stop = scan_anthropic_passthrough_chunk(
                             &chunk,
                             &has_text_delta,
@@ -1978,7 +2011,7 @@ fn build_streaming_response(
                         let chunk = normalize_reasoning_in_sse_chunk(&chunk).unwrap_or(chunk);
                         if should_inject {
                             done_state.appended_model_info = true;
-                            // 在 message_stop 事件之前插入模型名 block
+                            // Insert model name block before message_stop event
                             let marker = b"event: message_stop";
                             if let Some(pos) = chunk.windows(marker.len()).position(|w| w == marker)
                             {
@@ -1990,7 +2023,7 @@ fn build_streaming_response(
                                 out.extend_from_slice(&chunk[pos..]);
                                 return Poll::Ready(Some(Ok(Bytes::from(out))));
                             }
-                            // 没找到 message_stop 文本边界：注入放到 chunk 前
+                            // Fallback: inject before chunk if message_stop boundary not found
                             let mut out = anthropic_model_info_events(model_info.as_str());
                             out.extend_from_slice(&chunk);
                             return Poll::Ready(Some(Ok(Bytes::from(out))));
@@ -2107,7 +2140,7 @@ fn build_streaming_response(
                                     raw_stream_snapshot.as_deref(),
                                 )
                             })
-                        } else {
+} else {
                             None
                         };
                         tokio::spawn(async move {
@@ -2115,6 +2148,7 @@ fn build_streaming_response(
                                 &db2,
                                 &ah2,
                                 ak2.as_ref(),
+                                "",
                                 &e2,
                                 &rm2,
                                 true,
@@ -2240,7 +2274,7 @@ fn build_streaming_response(
                                     raw_stream_snapshot.as_deref(),
                                 )
                             })
-                        } else {
+} else {
                             None
                         };
                         tokio::spawn(async move {
@@ -2248,6 +2282,7 @@ fn build_streaming_response(
                                 &db2,
                                 &ah2,
                                 ak2.as_ref(),
+                                "",
                                 &e2,
                                 &rm2,
                                 true,
@@ -2330,12 +2365,12 @@ fn stream_chunk_has_text_delta(value: &Value) -> bool {
         .is_some_and(|delta| !delta.is_empty())
 }
 
-/// 在 message / delta 级别归一已有的 reasoning 等价字段。
-/// - 有 `reasoning_content` 无 `reasoning_text` → 补 `reasoning_text`
-/// - 有 `reasoning_text` 无 `reasoning_content` → 补 `reasoning_content`
-/// - 有 `reasoning_details` 无 `reasoning_content` → 补 `reasoning_content`
+/// Normalize existing reasoning equivalent fields at message / delta level.
+/// - Has `reasoning_content` without `reasoning_text` -> supply `reasoning_text`
+/// - Has `reasoning_text` without `reasoning_content` -> supply `reasoning_content`
+/// - Has `reasoning_details` without `reasoning_content` -> supply `reasoning_content`
 ///
-/// 只翻译已存在的信息，不缓存、不回放、不凭空生成 reasoning 历史。
+/// Only translates existing information, without fabricating reasoning history.
 fn normalize_reasoning_fields(value: &mut Value) {
     let obj = match value.as_object_mut() {
         Some(obj) => obj,
@@ -2361,8 +2396,8 @@ fn normalize_reasoning_fields(value: &mut Value) {
     }
 }
 
-/// 扫描 SSE chunk 字节中的 reasoning delta 等价字段，
-/// 补全缺少的对应字段。返回 `Some(modified_bytes)` 如果有任何修改。
+/// Scan SSE chunk bytes for reasoning delta equivalent fields,
+/// completing missing counterpart fields. Returns `Some(modified_bytes)` if modified.
 fn normalize_reasoning_in_sse_chunk(chunk: &Bytes) -> Option<Bytes> {
     let text = std::str::from_utf8(chunk).ok()?;
     if !text.contains("reasoning_content")
@@ -2434,14 +2469,14 @@ fn stream_chunk_has_model_info_delta(value: &Value, model: &str) -> bool {
                 .and_then(Value::as_str)
                 .is_some_and(|content| {
                     let trimmed = content.trim();
-                    trimmed == format!("model: {model}") || trimmed == format!("模型: {model}")
+                    trimmed == format!("model: {model}") || trimmed == format!("Model: {model}")
                 })
         })
 }
 
-/// 检测 OpenAI 兼容 chunk 是否包含函数/工具调用信号。
-/// 一旦响应中存在工具调用，本轮就是 CALL 中间态，不应附加模型信息，
-/// 否则下游循环复用时会把 `model: ...` 当成对话内容重复显示。
+/// Detect whether OpenAI compatible chunk contains function/tool call signals.
+/// If response contains tool calls, this turn is a CALL intermediate state and should not attach model info,
+/// otherwise downstream will display `model: ...` repeatedly as conversation content.
 fn stream_chunk_has_tool_calls(value: &Value) -> bool {
     let has_responses_tool = matches!(
         value.get("type").and_then(Value::as_str),
@@ -2499,7 +2534,7 @@ fn model_info_delta(model: &str) -> Vec<u8> {
         .map(|duration| duration.as_secs())
         .unwrap_or_default();
     let payload = serde_json::json!({
-        "id": format!("chatcmpl-api-switch-model-info-{created}"),
+        "id": format!("chatcmpl-smart-api-gateway-model-info-{created}"),
         "object": "chat.completion.chunk",
         "created": created,
         "model": model,
@@ -2514,10 +2549,10 @@ fn model_info_delta(model: &str) -> Vec<u8> {
     format!("data: {payload}\n\n").into_bytes()
 }
 
-/// 为 Responses 同协议直通流生成“模型名”注入事件（Responses 原生 SSE 格式）。
+/// Generate model name injection event for Responses passthrough stream (Responses native SSE format).
 ///
-/// 不依赖下游展示顶层 `response.model`，而是追加一段 output_text.delta，
-/// 让开启调试开关的用户能在正文里看到本轮 API Switch 实际命中的条目。
+/// Appends output_text.delta instead of relying on client displaying top-level `response.model`,
+/// allowing users with debug toggle enabled to see the actual routed model in response text.
 fn responses_model_info_event(model: &str) -> Vec<u8> {
     let payload = serde_json::json!({
         "type": "response.output_text.delta",
@@ -2551,12 +2586,12 @@ fn inject_responses_model_info_chunk(chunk: &Bytes, model_info: &str) -> Bytes {
     Bytes::from(out)
 }
 
-/// 为 Claude 同协议直通流生成"模型名"注入事件（Anthropic 原生 SSE 格式）。
+/// Generate model name injection event for Claude passthrough stream (Anthropic native SSE format).
 ///
-/// AUTO 路由下用户需要知道实际命中的模型。直通流是 Anthropic 原生格式，
-/// OpenAI 的 `model_info_delta` 不兼容，故用 content_block 三件套
-/// （start→delta→stop）追加一段 `\n\nmodel: xxx` 文本，客户端按正文显示。
-/// 使用一个高 index（99）独立 block，避免与上游 content block 冲突。
+/// Under AUTO routing, users need to know the actual routed model.
+/// Since OpenAI `model_info_delta` is incompatible with Anthropic stream,
+/// use content_block triplet (start->delta->stop) appending `\n\nmodel: xxx` text.
+/// Uses a high index (99) independent block to avoid collisions with upstream content blocks.
 fn anthropic_model_info_events(model: &str) -> Vec<u8> {
     let idx = 99;
     let start = serde_json::json!({
@@ -2576,17 +2611,17 @@ fn anthropic_model_info_events(model: &str) -> Vec<u8> {
     .into_bytes()
 }
 
-/// Anthropic 的 prompt 规模 = input_tokens + cache_read + cache_creation。
-/// 高缓存命中时 input_tokens 可能为 0，必须把缓存 token 计入，否则 IN TOKEN 显示 0。
+/// Anthropic prompt size = input_tokens + cache_read + cache_creation.
+/// On high cache hits input_tokens may be 0; cache tokens must be included to avoid displaying 0.
 fn anthropic_prompt_tokens(usage: Option<&Value>) -> i64 {
     let Some(u) = usage else { return 0 };
     let get = |k: &str| u.get(k).and_then(Value::as_i64).unwrap_or(0);
     get("input_tokens") + get("cache_read_input_tokens") + get("cache_creation_input_tokens")
 }
 
-/// 直通流字节里查找 Anthropic 事件：判断是否含工具调用 / 已含文本 / 到达
-/// message_stop，并提取 usage token（Anthropic 把 input_tokens 放在
-/// message_start 的 /message/usage，output_tokens 放在 message_delta 顶层 usage）。
+/// Search Anthropic events in passthrough stream bytes: check tool calls / text present / message_stop reached,
+/// and extract usage tokens (Anthropic places input_tokens in
+/// message_start /message/usage, output_tokens in message_delta top-level usage).
 fn scan_anthropic_passthrough_chunk(
     chunk: &Bytes,
     has_text: &Arc<AtomicBool>,
@@ -2605,9 +2640,9 @@ fn scan_anthropic_passthrough_chunk(
         };
         match value.get("type").and_then(Value::as_str) {
             Some("message_start") => {
-                // Anthropic 的 prompt 成本分散在 input_tokens + 缓存 token。
-                // 高缓存命中时 input_tokens 可能为 0，但 cache_read/creation 很大，
-                // 真实 prompt 规模 = 三者之和（否则 IN TOKEN 显示 0，误导）。
+                // Anthropic prompt cost distributed across input_tokens + cache tokens.
+                // input_tokens may be 0 on high cache hit while cache_read/creation is large;
+                // real prompt tokens = sum of three (otherwise IN TOKEN displays misleading 0).
                 let u = value.pointer("/message/usage");
                 let prompt = anthropic_prompt_tokens(u);
                 if prompt > 0 {
@@ -2644,7 +2679,7 @@ fn scan_anthropic_passthrough_chunk(
                 }
             }
             Some("message_delta") => {
-                // output_tokens 在 message_delta 顶层 usage
+                // output_tokens in message_delta top-level usage
                 if let Some(c) = value
                     .pointer("/usage/output_tokens")
                     .and_then(Value::as_i64)
@@ -2653,7 +2688,7 @@ fn scan_anthropic_passthrough_chunk(
                         completion_tokens.store(c, Ordering::Relaxed);
                     }
                 }
-                // prompt（含缓存 token）兜底：部分中转在 message_delta 才给全
+                // prompt (with cache tokens) fallback: some relays provide full stats in message_delta
                 let prompt = anthropic_prompt_tokens(value.get("usage"));
                 if prompt > 0 {
                     prompt_tokens.store(prompt, Ordering::Relaxed);
@@ -2850,8 +2885,8 @@ fn append_and_parse_sse(
             let Ok(value) = serde_json::from_str::<Value>(payload) else {
                 continue;
             };
-            // 只有 error 值是非 null 对象时才算真正的错误
-            // 修复: value.get("error").is_some() 对 "error": null 也会返回 true，导致误判
+            // Only count as real error if error value is a non-null object
+            // Fix: value.get("error").is_some() returns true for "error": null, causing misdetection
             if let Some(err) = value.get("error") {
                 if !err.is_null() {
                     has_sse_error.store(true, Ordering::Relaxed);
@@ -2984,7 +3019,7 @@ async fn disable_entry(state: &ProxyState, entry: &ApiEntry) {
 }
 
 async fn freeze_channel_entries(state: &ProxyState, entry: &ApiEntry) {
-    // 限定词通常代表账号、额度、密钥或上游通道级故障；只冷冻同渠道 6 小时，不永久禁用用户开关。
+    // Keywords indicate quota, auth, or channel-level failures; freezes channel for 6 hours without permanently disabling user switch.
     let cooldown_until = chrono::Utc::now().timestamp() + 21600;
     match state
         .db
@@ -3271,6 +3306,7 @@ fn log_usage(
     db: &Database,
     app_handle: &Option<crate::AppEventHandle>,
     access_key: Option<&AccessKey>,
+    request_id: &str,
     entry: &ApiEntry,
     requested_model: &str,
     is_stream: bool,
@@ -3291,19 +3327,19 @@ fn log_usage(
     let token_name = access_key.map(|ak| ak.name.as_str()).unwrap_or("NONE");
     let use_time = ((latency_ms as f64) / 1000.0).ceil() as i64;
 
-    // 诊断前缀：abcc714 升级 IN/OUT 分离后，元数据写入 other 字段，
-    // 但前端 LogPage.tsx 仅展示 log.content，导致请求/实际模型、尝试路径、
-    // 流结束原因等关键信息在前端无法直接看到（历史 regression）。
-    // 在此处把诊断信息前置到 content 头部，前端零改动即可恢复可见性。
+    // Diagnostic prefix: after IN/OUT separation, metadata written to other field;
+    // frontend displays log.content; requested/actual model, attempt path,
+    // stream termination reason are prepended to content for visibility.
+    // Prepending diagnostic info here restores visibility without frontend changes.
     let mut content = String::new();
-    content.push_str(&format!("请求模型:{}\n", requested_model));
-    content.push_str(&format!("实际模型:{}\n", entry.model));
+    content.push_str(&format!("Requested Model:{}\n", requested_model));
+    content.push_str(&format!("Actual Model:{}\n", entry.model));
     let path_short = format_attempt_path_short(attempt_path);
     if !path_short.is_empty() {
-        content.push_str(&format!("尝试路径:{}\n", path_short));
+        content.push_str(&format!("Attempt Path:{}\n", path_short));
     }
     if let Some(reason) = stream_end_reason {
-        content.push_str(&format!("流结束原因:{}\n", reason.as_str()));
+        content.push_str(&format!("Stream Termination Reason:{}\n", reason.as_str()));
     }
     if !content_out.is_empty() {
         content.push('\n');
@@ -3336,6 +3372,10 @@ fn log_usage(
         stream_end_reason,
     );
 
+    if !request_id.is_empty() {
+        other["request_id"] = Value::String(request_id.to_string());
+    }
+
     other_raw = other.to_string();
 
     if db
@@ -3359,7 +3399,7 @@ fn log_usage(
             use_time,
             status_code,
             success,
-            "",
+            request_id,
             "default",
             &other_raw,
             error_message,
@@ -3394,18 +3434,19 @@ mod tests {
             app_handle: None,
             http_client: reqwest::Client::new(),
             response_store: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            rate_limiter: Arc::new(crate::proxy::rate_limiter::RateLimiter::new()),
         }
     }
 
     #[test]
     fn strip_model_info_suffix_removes_assistant_tail_only() {
-        let input = "回答正文\n\nmodel: gpt-real";
-        assert_eq!(strip_model_info_suffix(input), "回答正文");
+        let input = "Response text\n\nmodel: gpt-real";
+        assert_eq!(strip_model_info_suffix(input), "Response text");
     }
 
     #[test]
     fn strip_model_info_suffix_preserves_middle_and_code_block_model_text() {
-        let middle = "这里提到 model: gpt-real 但不是尾部\n继续正文";
+        let middle = "Mentions model: gpt-real but not at tail\ncontinue text";
         assert_eq!(strip_model_info_suffix(middle), middle);
 
         let code = "```yaml\nmodel: gpt-real\n```";
@@ -3416,11 +3457,11 @@ mod tests {
     fn clean_model_info_from_inbound_body_only_assistant_messages() {
         let mut body = serde_json::json!({
             "messages": [
-                {"role": "user", "content": "请保留这个 model: user-mentioned"},
-                {"role": "assistant", "content": "上一轮回答\n\nmodel: gpt-real"},
-                {"role": "tool", "content": "工具输出\n\nmodel: tool-mentioned"},
+                {"role": "user", "content": "Please preserve this model: user-mentioned"},
+                {"role": "assistant", "content": "Previous answer\n\nmodel: gpt-real"},
+                {"role": "tool", "content": "Tool output\n\nmodel: tool-mentioned"},
                 {"role": "assistant", "content": [
-                    {"type": "text", "text": "数组文本\n\nmodel: gpt-array"}
+                    {"type": "text", "text": "Array text\n\nmodel: gpt-array"}
                 ]}
             ]
         });
@@ -3429,14 +3470,14 @@ mod tests {
 
         assert_eq!(
             body["messages"][0]["content"],
-            "请保留这个 model: user-mentioned"
+            "Please preserve this model: user-mentioned"
         );
-        assert_eq!(body["messages"][1]["content"], "上一轮回答");
+        assert_eq!(body["messages"][1]["content"], "Previous answer");
         assert_eq!(
             body["messages"][2]["content"],
-            "工具输出\n\nmodel: tool-mentioned"
+            "Tool output\n\nmodel: tool-mentioned"
         );
-        assert_eq!(body["messages"][3]["content"][0]["text"], "数组文本");
+        assert_eq!(body["messages"][3]["content"][0]["text"], "Array text");
     }
 
     #[test]
@@ -3444,14 +3485,14 @@ mod tests {
         let mut body = serde_json::json!({
             "input": [
                 {"role": "assistant", "content": [
-                    {"type": "output_text", "text": "responses 历史
+                    {"type": "output_text", "text": "responses history
 
 model: gpt-responses"}
                 ]}
             ],
             "messages": [
                 {"role": "assistant", "content": [
-                    {"type": "text", "text": "claude 历史
+                    {"type": "text", "text": "claude history
 
 model: claude-entry"}
                 ]}
@@ -3460,8 +3501,8 @@ model: claude-entry"}
 
         clean_model_info_from_inbound_body(&mut body);
 
-        assert_eq!(body["input"][0]["content"][0]["text"], "responses 历史");
-        assert_eq!(body["messages"][0]["content"][0]["text"], "claude 历史");
+        assert_eq!(body["input"][0]["content"][0]["text"], "responses history");
+        assert_eq!(body["messages"][0]["content"][0]["text"], "claude history");
     }
 
     #[test]
@@ -3469,14 +3510,14 @@ model: claude-entry"}
         let mut inbound_body = serde_json::json!({
             "model": "auto",
             "messages": [
-                {"role": "assistant", "content": "上一轮可见回答
+                {"role": "assistant", "content": "Previous visible answer
 
 model: old-entry"},
-                {"role": "user", "content": "继续"}
+                {"role": "user", "content": "continue"}
             ]
         });
         clean_model_info_from_inbound_body(&mut inbound_body);
-        assert_eq!(inbound_body["messages"][0]["content"], "上一轮可见回答");
+        assert_eq!(inbound_body["messages"][0]["content"], "Previous visible answer");
 
         let prompt_tokens = Arc::new(AtomicI64::new(0));
         let completion_tokens = Arc::new(AtomicI64::new(0));
@@ -3538,8 +3579,8 @@ data: [DONE]
         assert_eq!(text.matches("model: old-entry").count(), 0);
     }
 
-    /// Claude 直通的模型名注入：生成的应是合法 Anthropic content_block 事件，
-    /// 含 `model: xxx` 文本。
+    /// Claude passthrough model name injection: generates valid Anthropic content_block event,
+    /// containing `model: xxx` text.
     #[test]
     fn anthropic_model_info_events_are_valid() {
         let bytes = anthropic_model_info_events("claude-opus-4-8");
@@ -3548,10 +3589,10 @@ data: [DONE]
         assert!(text.contains("event: content_block_delta"));
         assert!(text.contains("event: content_block_stop"));
         assert!(text.contains("model: claude-opus-4-8"));
-        // 每个 data: 行都应是合法 JSON
+        // Each data: line should be valid JSON
         for line in text.lines() {
             if let Some(p) = line.strip_prefix("data: ") {
-                serde_json::from_str::<Value>(p).expect("data 行应为合法 JSON");
+                serde_json::from_str::<Value>(p).expect("data line should be valid JSON");
             }
         }
     }
@@ -3629,7 +3670,7 @@ data:{"type":"message_stop"}
             "responses",
             "https://example.com/v1/responses?api_key=raw",
             false,
-            Some("x-api-switch-responses-passthrough"),
+            Some("x-smart-api-gateway-responses-passthrough"),
             &gateway_body,
             &upstream_body,
         );
@@ -3685,22 +3726,22 @@ data:{"type":"message_stop"}
             "channel_api_type": "responses",
             "url": "https://example.com/v1/responses?api_key=raw",
             "is_stream": false,
-            "passthrough_header": "x-api-switch-responses-passthrough",
-            "gateway_body": {"model": "auto", "input": "原始入口请求"},
-            "upstream_body": {"model": "gpt-5.5", "input": "原始上游请求"},
+            "passthrough_header": "x-smart-api-gateway-responses-passthrough",
+            "gateway_body": {"model": "auto", "input": "Original ingress request"},
+            "upstream_body": {"model": "gpt-5.5", "input": "Original upstream request"},
             "status_code": 200,
             "content_type": "application/json",
             "x_request_id": "req-1",
-            "upstream_response_body": {"output": [{"text": "原始上游返回"}]}
+            "upstream_response_body": {"output": [{"text": "Original upstream response"}]}
         });
 
         let (content, other) = split_raw_protocol_for_usage_log(Some(&raw_protocol));
-        let content = serde_json::from_str::<Value>(&content).expect("content 应为 OUT JSON");
-        let other = serde_json::from_str::<Value>(&other).expect("other 应为 IN JSON");
+        let content = serde_json::from_str::<Value>(&content).expect("content should be OUT JSON");
+        let other = serde_json::from_str::<Value>(&other).expect("other should be IN JSON");
 
         assert_eq!(other["event"], "upstream_request");
-        assert_eq!(other["gateway_body"]["input"], "原始入口请求");
-        assert_eq!(other["upstream_body"]["input"], "原始上游请求");
+        assert_eq!(other["gateway_body"]["input"], "Original ingress request");
+        assert_eq!(other["upstream_body"]["input"], "Original upstream request");
         assert!(other.get("upstream_response_body").is_none());
         assert!(other.get("error_body").is_none());
 
@@ -3708,14 +3749,14 @@ data:{"type":"message_stop"}
         assert_eq!(content["status_code"], 200);
         assert_eq!(
             content["upstream_response_body"]["output"][0]["text"],
-            "原始上游返回"
+            "Original upstream response"
         );
         assert!(content.get("gateway_body").is_none());
         assert!(content.get("upstream_body").is_none());
     }
 
-    /// 扫描函数应正确识别 text_delta(有文本)、tool_use(工具调用)、message_stop，
-    /// 并从 message_start / message_delta 提取 usage token。
+    /// Scanner should correctly identify text_delta, tool_use, message_stop,
+    /// and extract usage tokens from message_start / message_delta.
     #[test]
     fn scan_anthropic_passthrough_detects_signals() {
         let has_text = Arc::new(AtomicBool::new(false));
@@ -3723,7 +3764,7 @@ data:{"type":"message_stop"}
         let pt = Arc::new(AtomicI64::new(0));
         let ct = Arc::new(AtomicI64::new(0));
 
-        // message_start 带 input_tokens（在 /message/usage）
+        // message_start carries input_tokens (in /message/usage)
         let start_chunk = Bytes::from_static(
             b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"model\":\"claude-opus-4-8\",\"usage\":{\"input_tokens\":123,\"output_tokens\":1}}}\n\n",
         );
@@ -3731,10 +3772,10 @@ data:{"type":"message_stop"}
         assert_eq!(
             pt.load(Ordering::Relaxed),
             123,
-            "应从 message_start 取 input_tokens"
+            "Should extract input_tokens from message_start"
         );
 
-        // 高缓存命中：input_tokens=0 但 cache token 很大，prompt 应计入缓存
+        // High cache hit: input_tokens=0 but cache token large, prompt includes cache
         let pt2 = Arc::new(AtomicI64::new(0));
         let cache_chunk = Bytes::from_static(
             b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":0,\"output_tokens\":1,\"cache_creation_input_tokens\":490,\"cache_read_input_tokens\":429758}}}\n\n",
@@ -3743,7 +3784,7 @@ data:{"type":"message_stop"}
         assert_eq!(
             pt2.load(Ordering::Relaxed),
             430248,
-            "高缓存命中时 prompt 应 = input + cache_read + cache_creation"
+            "Prompt on high cache hit should equal input + cache_read + cache_creation"
         );
 
         let text_chunk = Bytes::from_static(
@@ -3754,7 +3795,7 @@ data:{"type":"message_stop"}
         assert!(has_text.load(Ordering::Relaxed));
         assert!(!has_tool.load(Ordering::Relaxed));
 
-        // message_delta 带 output_tokens
+        // message_delta carries output_tokens
         let delta_chunk = Bytes::from_static(
             b"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{},\"usage\":{\"output_tokens\":70}}\n\n",
         );
@@ -3762,20 +3803,20 @@ data:{"type":"message_stop"}
         assert_eq!(
             ct.load(Ordering::Relaxed),
             70,
-            "应从 message_delta 取 output_tokens"
+            "Should take output_tokens from message_delta"
         );
 
         let tool_chunk = Bytes::from_static(
             b"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"x\"}}\n\n",
         );
         scan_anthropic_passthrough_chunk(&tool_chunk, &has_text, &has_tool, &pt, &ct);
-        assert!(has_tool.load(Ordering::Relaxed), "应检测到 tool_use");
+        assert!(has_tool.load(Ordering::Relaxed), "Should detect tool_use");
 
         let stop_chunk =
             Bytes::from_static(b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
         assert!(
             scan_anthropic_passthrough_chunk(&stop_chunk, &has_text, &has_tool, &pt, &ct),
-            "应检测到 message_stop"
+            "Should detect message_stop"
         );
     }
 
@@ -3815,8 +3856,8 @@ data: [DONE]\n"
     #[test]
     fn model_info_label_appends_channel_name_when_available() {
         assert_eq!(
-            model_info_label("deepseek-ai/deepseek-v4-pro", Some("渠道信息")),
-            "deepseek-ai/deepseek-v4-pro/渠道信息"
+            model_info_label("deepseek-ai/deepseek-v4-pro", Some("Channel Info")),
+            "deepseek-ai/deepseek-v4-pro/Channel Info"
         );
         assert_eq!(model_info_label("gpt-test", None), "gpt-test");
         assert_eq!(model_info_label("gpt-test", Some("unknown")), "gpt-test");
@@ -3824,7 +3865,7 @@ data: [DONE]\n"
 
     #[test]
     fn model_info_delta_uses_openai_chat_completion_chunk_shape() {
-        let frame = String::from_utf8(model_info_delta("gpt-test/渠道信息")).expect("valid utf8");
+        let frame = String::from_utf8(model_info_delta("gpt-test/Channel Info")).expect("valid utf8");
         let payload = frame
             .strip_prefix("data: ")
             .and_then(|s| s.strip_suffix("\n\n"))
@@ -3837,11 +3878,11 @@ data: [DONE]\n"
             .starts_with("chatcmpl-"));
         assert_eq!(value["object"], "chat.completion.chunk");
         assert!(value["created"].as_u64().is_some());
-        assert_eq!(value["model"], "gpt-test/渠道信息");
+        assert_eq!(value["model"], "gpt-test/Channel Info");
         assert_eq!(value["choices"][0]["index"], 0);
         assert_eq!(
             value["choices"][0]["delta"]["content"],
-            "\n\nmodel: gpt-test/渠道信息"
+            "\n\nmodel: gpt-test/Channel Info"
         );
         assert!(value["choices"][0]["finish_reason"].is_null());
     }
@@ -3849,7 +3890,7 @@ data: [DONE]\n"
     #[test]
     fn responses_model_info_event_uses_responses_output_text_delta_shape() {
         let frame =
-            String::from_utf8(responses_model_info_event("gpt-test/渠道信息")).expect("valid utf8");
+            String::from_utf8(responses_model_info_event("gpt-test/Channel Info")).expect("valid utf8");
         assert!(frame.starts_with("event: response.output_text.delta\n"));
         let payload = frame
             .lines()
@@ -3858,7 +3899,7 @@ data: [DONE]\n"
         let value: Value = serde_json::from_str(payload).expect("valid json");
 
         assert_eq!(value["type"], "response.output_text.delta");
-        assert_eq!(value["delta"], "\n\nmodel: gpt-test/渠道信息");
+        assert_eq!(value["delta"], "\n\nmodel: gpt-test/Channel Info");
     }
 
     #[test]
@@ -3874,14 +3915,14 @@ data: {"type":"response.completed","response":{}}
         );
 
         let injected = String::from_utf8(
-            inject_responses_model_info_chunk(&chunk, "deepseek-ai/deepseek-v4-pro/渠道信息")
+            inject_responses_model_info_chunk(&chunk, "deepseek-ai/deepseek-v4-pro/Channel Info")
                 .to_vec(),
         )
         .expect("valid utf8");
 
         assert_eq!(
             injected
-                .matches("model: deepseek-ai/deepseek-v4-pro/渠道信息")
+                .matches("model: deepseek-ai/deepseek-v4-pro/Channel Info")
                 .count(),
             1
         );
@@ -3892,7 +3933,7 @@ data: {"type":"response.completed","response":{}}
             2
         );
         let model_pos = injected
-            .find("model: deepseek-ai/deepseek-v4-pro/渠道信息")
+            .find("model: deepseek-ai/deepseek-v4-pro/Channel Info")
             .expect("model marker");
         let completed_pos = injected
             .find("event: response.completed")
@@ -4649,12 +4690,12 @@ data: [DONE]\n",
         assert!(!request_uses_tool_calling(&plain_body));
     }
 
-    // ── tool_calls 场景测试 ─────────────────────────────────────────
+    // --- tool_calls scenario tests ---------------------------------
 
     #[test]
     fn append_and_parse_sse_no_model_info_when_tool_calls_present() {
-        // 场景：响应同时包含文本内容和工具调用（LLM 常见行为）
-        // 预期：不附加模型信息，因为 tool_call 是中间步骤
+        // Scenario: response contains both text content and tool calls
+        // Expected: do not attach model info because tool_call is intermediate step
         let mut buffer = String::new();
         let chunk = Bytes::from_static(
             b"data: {\"choices\":[{\"delta\":{\"content\":\"Let me check.\"}}]}\n\
@@ -4683,19 +4724,19 @@ data: [DONE]\n"
             &mut done_state,
         );
 
-        // 有文本内容，所以 has_text_delta 应为 true
+        // Has text content, so has_text_delta should be true
         assert!(has_text_delta.load(Ordering::Relaxed));
-        // 有工具调用，所以 has_tool_calls 应为 true
+        // Has tool calls, so has_tool_calls should be true
         assert!(has_tool_calls.load(Ordering::Relaxed));
-        // 不应附加模型信息
+        // Should not attach model info
         assert!(output.is_none());
         assert!(!done_state.appended_model_info);
     }
 
     #[test]
     fn append_and_parse_sse_no_model_info_when_pure_tool_calls() {
-        // 场景：纯工具调用响应（无文本内容）
-        // 预期：不附加模型信息
+        // Scenario: tool call only response (no text content)
+        // Expected: do not attach model info
         let mut buffer = String::new();
         let chunk = Bytes::from_static(
             b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]}}]}\n\
@@ -4723,19 +4764,19 @@ data: [DONE]\n"
             &mut done_state,
         );
 
-        // 无文本内容，has_text_delta 应为 false
+        // No text content, has_text_delta should be false
         assert!(!has_text_delta.load(Ordering::Relaxed));
-        // 有工具调用，has_tool_calls 应为 true
+        // Has tool calls, has_tool_calls should be true
         assert!(has_tool_calls.load(Ordering::Relaxed));
-        // 不应附加模型信息
+        // Should not attach model info
         assert!(output.is_none());
         assert!(!done_state.appended_model_info);
     }
 
     #[test]
     fn append_and_parse_sse_appends_model_info_for_pure_text() {
-        // 场景：纯文本响应（无工具调用）
-        // 预期：附加模型信息
+        // Scenario: plain text response (no tool calls)
+        // Expected: attach model info
         let mut buffer = String::new();
         let chunk = Bytes::from_static(
             b"data: {\"choices\":[{\"delta\":{\"content\":\"Hello!\"}}]}\n\
@@ -4763,38 +4804,38 @@ data: [DONE]\n",
             &mut done_state,
         );
 
-        // 有文本内容
+        // Has text content
         assert!(has_text_delta.load(Ordering::Relaxed));
-        // 无工具调用
+        // No tool calls
         assert!(!has_tool_calls.load(Ordering::Relaxed));
-        // 应附加模型信息
+        // Should attach model info
         let text =
             String::from_utf8(output.expect("should have output").to_vec()).expect("valid utf8");
         assert_eq!(text.matches("model: gpt-test").count(), 1);
         assert!(done_state.appended_model_info);
     }
 
-    /// 回归测试（历史 bug）：带 tools 定义但本轮响应**没有**实际 tool_calls
-    /// 应该正常注入 model: xxx。
+    /// Regression test: request defines tools but response has NO tool_calls
+    /// should inject model: xxx normally.
     ///
-    /// 历史：commit 3f5825d 曾在请求侧检查 body 里是否含任何 tool 字段来屏蔽注入，
-    /// 结果所有 agent 客户端（Cursor / Claude Code 等）都看不到模型名。
-    /// 本测试锁定修复：请求侧检查已撤销，只看响应侧 `has_tool_calls`。
+    /// Historical fix: commit 3f5825d checked request body tool fields,
+    /// which masked model names for agent clients (Cursor / Claude Code etc.).
+    /// Fix verification: request check removed, relies on response has_tool_calls.
     #[test]
     fn should_append_model_info_ignores_request_tools_definition() {
-        // 仅测纯函数行为：request_uses_structured_output 与 request body 是否含 tools 无关
+        // Pure function test: request_uses_structured_output independent of tools in request body
         let body_with_tools = serde_json::json!({
             "model": "auto",
-            "messages": [{"role": "user", "content": "你好"}],
+            "messages": [{"role": "user", "content": "hello"}],
             "tools": [{
                 "type": "function",
                 "function": {"name": "read_file", "parameters": {}}
             }],
             "tool_choice": "auto"
         });
-        // 核心断言：带 tools 的请求不应触发 structured_output 分支
+        // Core assertion: request with tools should not trigger structured_output branch
         assert!(!request_uses_structured_output(&body_with_tools));
-        // 次要断言：contains_tool_calling_field 仍识别 tools 定义（以备未来精细化判断）
+        // Secondary assertion: contains_tool_calling_field still identifies tools definition
         assert!(contains_tool_calling_field(&body_with_tools));
     }
 
@@ -4803,7 +4844,7 @@ data: [DONE]\n",
         let state = test_proxy_state(true);
         let body = serde_json::json!({
             "model": "auto",
-            "messages": [{"role": "user", "content": "你好"}],
+            "messages": [{"role": "user", "content": "hello"}],
         });
 
         assert!(should_append_model_info(
@@ -4870,8 +4911,8 @@ data: [DONE]\n",
 
     #[test]
     fn transform_sse_chunk_no_model_info_when_tool_calls_present() {
-        // 场景：Claude 适配器路径，响应包含工具调用
-        // 预期：不附加模型信息
+        // Scenario: Claude adapter path, response contains tool calls
+        // Expected: do not attach model info
         let adapter = get_adapter("claude");
         let chunk = Bytes::from_static(
             b"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"get_weather\"}}\n\
@@ -4902,9 +4943,9 @@ data: [DONE]\n"
         )
         .expect("transformed output");
 
-        // 工具调用被转换为 OpenAI 格式的 tool_calls
+        // Tool calls converted to OpenAI format tool_calls
         assert!(has_tool_calls.load(Ordering::Relaxed));
-        // 不应附加模型信息
+        // Should not attach model info
         let output = String::from_utf8(output.to_vec()).expect("valid utf8");
         assert_eq!(output.matches("model: claude-3").count(), 0);
         assert!(!done_state.appended_model_info);
@@ -4912,9 +4953,9 @@ data: [DONE]\n"
 
     #[test]
     fn append_and_parse_sse_no_model_info_when_finish_reason_tool_calls() {
-        // 场景：finish_reason 为 "tool_calls" 但 delta 中没有 tool_calls 数组
-        // 这是 Claude 适配器在 message_delta 事件中的输出格式
-        // 预期：不附加模型信息
+        // Scenario: finish_reason is "tool_calls" but no tool_calls array in delta
+        // Output format of Claude adapter in message_delta event
+        // Expected: do not attach model info
         let mut buffer = String::new();
         let chunk = Bytes::from_static(
             b"data: {\"choices\":[{\"delta\":{\"content\":\"Let me check.\"}}]}\n\
@@ -4942,19 +4983,19 @@ data: [DONE]\n",
             &mut done_state,
         );
 
-        // 有文本内容
+        // Has text content
         assert!(has_text_delta.load(Ordering::Relaxed));
-        // finish_reason: "tool_calls" 应被检测为工具调用
+        // finish_reason: "tool_calls" detected as tool call
         assert!(has_tool_calls.load(Ordering::Relaxed));
-        // 不应附加模型信息
+        // Should not attach model info
         assert!(output.is_none());
         assert!(!done_state.appended_model_info);
     }
 
     #[test]
     fn append_and_parse_sse_no_model_info_when_finish_reason_function_call() {
-        // 场景：finish_reason 为 "function_call"（旧格式）
-        // 预期：不附加模型信息
+        // Scenario: finish_reason is "function_call" (legacy format)
+        // Expected: do not attach model info
         let mut buffer = String::new();
         let chunk = Bytes::from_static(
             b"data: {\"choices\":[{\"delta\":{\"content\":\"Let me check.\"}}]}\n\
@@ -4982,11 +5023,11 @@ data: [DONE]\n",
             &mut done_state,
         );
 
-        // 有文本内容
+        // Has text content
         assert!(has_text_delta.load(Ordering::Relaxed));
-        // finish_reason: "function_call" 应被检测为工具调用
+        // finish_reason: "function_call" detected as tool call
         assert!(has_tool_calls.load(Ordering::Relaxed));
-        // 不应附加模型信息
+        // Should not attach model info
         assert!(output.is_none());
         assert!(!done_state.appended_model_info);
     }
@@ -5067,23 +5108,23 @@ data: [DONE]\n"
                 "model": model,
                 "thinking": true,
                 "reasoning": { "effort": "high" },
-                "reasoning_content": "顶层思维链",
-                "reasoning_text": "顶层兼容思维链",
-                "reasoning_details": "顶层详情思维链",
+                "reasoning_content": "top-level chain of thought",
+                "reasoning_text": "top-level compatible chain of thought",
+                "reasoning_details": "top-level detailed chain of thought",
                 "reasoning_effort": "high",
                 "messages": [
                     {
                         "role": "user",
-                        "content": "你好"
+                        "content": "hello"
                     },
                     {
                         "role": "assistant",
-                        "content": "历史回答",
+                        "content": "historical answer",
                         "thinking": true,
                         "reasoning": { "effort": "medium" },
-                        "reasoning_content": "历史思维链",
-                        "reasoning_text": "历史兼容思维链",
-                        "reasoning_details": "历史详情思维链",
+                        "reasoning_content": "historical chain of thought",
+                        "reasoning_text": "historical compatible chain of thought",
+                        "reasoning_details": "historical detailed chain of thought",
                         "reasoning_effort": "medium"
                     }
                 ]
@@ -5091,7 +5132,7 @@ data: [DONE]\n"
 
             apply_disable_reasoning(&mut body);
 
-            let obj = body.as_object().expect("请求体必须是对象");
+            let obj = body.as_object().expect("Request body must be an object");
             assert!(!obj.contains_key("thinking"));
             assert!(!obj.contains_key("reasoning"));
             assert!(!obj.contains_key("reasoning_content"));
@@ -5102,11 +5143,11 @@ data: [DONE]\n"
             let messages = body
                 .get("messages")
                 .and_then(Value::as_array)
-                .expect("必须保留消息数组");
+                .expect("Must preserve messages array");
             let assistant = messages
                 .get(1)
                 .and_then(Value::as_object)
-                .expect("必须保留助手消息");
+                .expect("Must preserve assistant message");
             assert!(!assistant.contains_key("thinking"));
             assert!(!assistant.contains_key("reasoning"));
             assert!(!assistant.contains_key("reasoning_content"));
@@ -5115,7 +5156,7 @@ data: [DONE]\n"
             assert!(!assistant.contains_key("reasoning_effort"));
             assert_eq!(
                 assistant.get("content"),
-                Some(&Value::String("历史回答".to_string()))
+                Some(&Value::String("historical answer".to_string()))
             );
         }
     }

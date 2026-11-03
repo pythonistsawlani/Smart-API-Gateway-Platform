@@ -16,24 +16,24 @@ jobs:
         include:
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: api-switch.exe
-            asset: api-switch-${{ github.ref_name }}-windows-x64.exe
+            artifact: smart-api-gateway.exe
+            asset: smart-api-gateway-${{ github.ref_name }}-windows-x64.exe
           - platform: macos-latest
             target: x86_64-apple-darwin
-            artifact: api-switch
-            asset: api-switch-${{ github.ref_name }}-macos-x64
+            artifact: smart-api-gateway
+            asset: smart-api-gateway-${{ github.ref_name }}-macos-x64
           - platform: macos-latest
             target: aarch64-apple-darwin
-            artifact: api-switch
-            asset: api-switch-${{ github.ref_name }}-macos-arm64
+            artifact: smart-api-gateway
+            asset: smart-api-gateway-${{ github.ref_name }}-macos-arm64
           - platform: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: api-switch
-            asset: api-switch-${{ github.ref_name }}-linux-x64
+            artifact: smart-api-gateway
+            asset: smart-api-gateway-${{ github.ref_name }}-linux-x64
           - platform: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            artifact: api-switch
-            asset: api-switch-${{ github.ref_name }}-linux-arm64
+            artifact: smart-api-gateway
+            asset: smart-api-gateway-${{ github.ref_name }}-linux-arm64
 
     runs-on: ${{ matrix.platform }}
 
@@ -79,10 +79,10 @@ jobs:
           mkdir -p artifact
           binary_dir="src-tauri/target/${{ matrix.target }}/release"
           # Copy binary
-          if [ -f "$binary_dir/api-switch.exe" ]; then
-            cp "$binary_dir/api-switch.exe" "artifact/${{ matrix.asset }}"
+          if [ -f "$binary_dir/smart-api-gateway.exe" ]; then
+            cp "$binary_dir/smart-api-gateway.exe" "artifact/${{ matrix.asset }}"
           else
-            cp "$binary_dir/api-switch" "artifact/${{ matrix.asset }}"
+            cp "$binary_dir/smart-api-gateway" "artifact/${{ matrix.asset }}"
           fi
           # Copy installer bundles if present
           if [ -d "$binary_dir/bundle" ]; then
@@ -104,10 +104,10 @@ jobs:
         include:
           - platform: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            asset: api-switch-${{ github.ref_name }}-linux-x64-headless
+            asset: smart-api-gateway-${{ github.ref_name }}-linux-x64-headless
           - platform: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            asset: api-switch-${{ github.ref_name }}-linux-arm64-headless
+            asset: smart-api-gateway-${{ github.ref_name }}-linux-arm64-headless
 
     runs-on: ${{ matrix.platform }}
 
@@ -146,7 +146,7 @@ jobs:
 
       - name: Verify no GUI libraries linked
         run: |
-          binary="src-tauri/target/${{ matrix.target }}/release/api-switch"
+          binary="src-tauri/target/${{ matrix.target }}/release/smart-api-gateway"
           if readelf -d "$binary" | grep -Ei 'libwebkit2gtk|libgtk-3|libgtk-4|libsoup'; then
             echo "::error::Headless binary unexpectedly links GUI libraries"
             exit 1
@@ -156,7 +156,7 @@ jobs:
       - name: Prepare artifact (rename)
         run: |
           mkdir -p artifact
-          cp "src-tauri/target/${{ matrix.target }}/release/api-switch" "artifact/${{ matrix.asset }}"
+          cp "src-tauri/target/${{ matrix.target }}/release/smart-api-gateway" "artifact/${{ matrix.asset }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -262,7 +262,7 @@ jobs:
             find "$output_dir" -maxdepth 1 -type f -name '*.apk' -print
             exit 1
           fi
-          cp "${signed_apks[0]}" "$signed_dir/api-switch-${{ github.ref_name }}-android-universal.apk"
+          cp "${signed_apks[0]}" "$signed_dir/smart-api-gateway-${{ github.ref_name }}-android-universal.apk"
 
       - name: Verify Android APK signature
         shell: bash
@@ -274,7 +274,7 @@ jobs:
       - name: Upload Android artifact
         uses: actions/upload-artifact@v4
         with:
-          name: api-switch-${{ github.ref_name }}-android-universal-apk
+          name: smart-api-gateway-${{ github.ref_name }}-android-universal-apk
           path: src-tauri/gen/android/app/build/outputs/apk/signed-release/*.apk
 
   publish:
@@ -298,14 +298,14 @@ jobs:
           ### Downloads
 
           **Portable binaries** (no install needed, just run):
-          - `api-switch-windows-x64.exe` — Windows
-          - `api-switch-macos-x64` — macOS Intel
-          - `api-switch-macos-arm64` — macOS Apple Silicon
-          - `api-switch-linux-x64` — Linux x64
-          - `api-switch-linux-arm64` — Linux ARM64
-          - `api-switch-linux-x64-headless` — Linux x64 (no GUI, smaller binary, suitable for servers/Termux)
-          - `api-switch-linux-arm64-headless` — Linux ARM64 (no GUI, suitable for servers/Termux)
-          - `api-switch-android-universal-apk` — Android universal APK
+          - `smart-api-gateway-windows-x64.exe` — Windows
+          - `smart-api-gateway-macos-x64` — macOS Intel
+          - `smart-api-gateway-macos-arm64` — macOS Apple Silicon
+          - `smart-api-gateway-linux-x64` — Linux x64
+          - `smart-api-gateway-linux-arm64` — Linux ARM64
+          - `smart-api-gateway-linux-x64-headless` — Linux x64 (no GUI, smaller binary, suitable for servers/Termux)
+          - `smart-api-gateway-linux-arm64-headless` — Linux ARM64 (no GUI, suitable for servers/Termux)
+          - `smart-api-gateway-android-universal-apk` — Android universal APK
 
           **Installers** (system integration):
           - `*.msi` / `*.exe` — Windows installer

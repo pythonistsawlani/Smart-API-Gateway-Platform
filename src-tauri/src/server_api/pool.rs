@@ -1,7 +1,7 @@
-//! Pool facade：API 入口的 CRUD、批量操作、延迟测试等。
+//! Pool facade: CRUD, batch operations, latency testing, etc. for API entries.
 //!
-//! 调用 `services::pool_service` 中的函数，底层使用 `&Database`，
-//! 在所有构建模式下均可用。
+//! Invokes functions in `services::pool_service`, using `&Database` underneath,
+//! available across all build modes.
 
 use crate::database::dao::PaginatedResult;
 use crate::database::ApiEntry;
@@ -13,12 +13,12 @@ use crate::services::pool_service::{
 use super::ServerApi;
 
 impl ServerApi {
-    /// 获取所有 API 入口。
+    /// Get all API entries.
     pub fn list_entries(&self) -> Result<Vec<ApiEntry>, AppError> {
         pool_service::list_entries(&self.state().db)
     }
 
-    /// 分页获取 API 入口。
+    /// Paginated retrieval of API entries.
     pub fn list_entries_paginated(
         &self,
         page: i32,
@@ -37,7 +37,7 @@ impl ServerApi {
         )
     }
 
-    /// 切换单个入口的启用状态。
+    /// Toggle enabled status of a single entry.
     pub fn toggle_entry(&self, id: &str, enabled: bool, pin_to_top: bool) -> Result<(), AppError> {
         let result = pool_service::toggle_entry(
             &self.state().db,
@@ -52,7 +52,7 @@ impl ServerApi {
         result
     }
 
-    /// 批量切换入口的启用状态（单次 IPC 调用）。
+    /// Batch toggle enabled status of entries (single IPC call).
     pub fn batch_toggle_entries(&self, ids: &[String], enabled: bool) -> Result<(), AppError> {
         let result = pool_service::batch_toggle_entries(
             &self.state().db,
@@ -66,7 +66,7 @@ impl ServerApi {
         result
     }
 
-    /// 按给定顺序重新排列入口。
+    /// Reorder entries in the given sequence.
     pub fn reorder_entries(&self, ordered_ids: &[String]) -> Result<(), AppError> {
         let result = pool_service::reorder_entries(&self.state().db, ordered_ids);
         if result.is_ok() {
@@ -75,7 +75,7 @@ impl ServerApi {
         result
     }
 
-    /// 删除指定入口。
+    /// Delete specified entry.
     pub fn delete_entry(&self, id: &str) -> Result<(), AppError> {
         let result = pool_service::delete_entry(&self.state().db, id);
         if result.is_ok() {
@@ -84,14 +84,14 @@ impl ServerApi {
         result
     }
 
-    /// 创建新 API 入口。
+    /// Create new API entry.
     pub fn create_entry(&self, params: CreateEntryParams) -> Result<ApiEntry, AppError> {
         let entry = pool_service::create_entry(&self.state().db, params)?;
         self.emit_event("entries-changed");
         Ok(entry)
     }
 
-    /// 批量回填目录元数据。
+    /// Batch backfill catalog metadata.
     pub fn backfill_entry_catalog_meta(
         &self,
         items: Vec<CatalogMetaUpdate>,
@@ -103,7 +103,7 @@ impl ServerApi {
         result
     }
 
-    /// 测试指定入口的延迟。
+    /// Test latency of specified entry.
     pub async fn test_entry_latency(
         &self,
         entry_id: &str,
@@ -117,7 +117,7 @@ impl ServerApi {
         result
     }
 
-    /// 更新指定入口的响应时间。
+    /// Update response time of specified entry.
     pub fn update_entry_response_ms(
         &self,
         entry_id: &str,
@@ -131,12 +131,12 @@ impl ServerApi {
         result
     }
 
-    /// 获取所有分组名称。
+    /// Get all group names.
     pub fn get_all_groups(&self) -> Result<Vec<String>, AppError> {
         pool_service::get_all_groups(&self.state().db)
     }
 
-    /// 更新指定入口的显示名称。
+    /// Update display name of specified entry.
     pub fn update_entry_display_name(&self, id: &str, display_name: &str) -> Result<(), AppError> {
         let result = pool_service::update_entry_display_name(&self.state().db, id, display_name);
         if result.is_ok() {
@@ -145,7 +145,7 @@ impl ServerApi {
         result
     }
 
-    /// 更新指定入口的分组。
+    /// Update group of specified entry.
     pub fn update_entry_group(&self, id: &str, group_name: &str) -> Result<(), AppError> {
         let result = pool_service::update_entry_group(&self.state().db, id, group_name);
         if result.is_ok() {

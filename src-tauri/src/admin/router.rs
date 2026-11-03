@@ -25,7 +25,7 @@ pub fn build_admin_router(state: AdminState) -> Router {
                 .put(handlers::update_settings)
                 .patch(handlers::patch_settings),
         )
-        // Channel API routes 鈥?all require auth
+        // Channel API routes - all require auth
         .route(
             "/admin/channels",
             get(channel_handlers::list).post(channel_handlers::create),
@@ -84,7 +84,7 @@ pub fn build_admin_router(state: AdminState) -> Router {
             "/admin/channels/test-direct",
             post(channel_handlers::test_channel_direct),
         )
-        // Pool API routes 鈥?all require auth
+        // Pool API routes - all require auth
         .route(
             "/admin/pool",
             get(pool_handlers::list).post(pool_handlers::create),
@@ -107,7 +107,7 @@ pub fn build_admin_router(state: AdminState) -> Router {
             put(pool_handlers::update_display_name),
         )
         .route("/admin/pool/:id/group", put(pool_handlers::update_group))
-        // Token API routes 鈥?all require auth
+        // Token API routes - all require auth
         .route(
             "/admin/tokens",
             get(token_handlers::list_tokens).post(token_handlers::create_token),
@@ -121,7 +121,7 @@ pub fn build_admin_router(state: AdminState) -> Router {
             "/admin/tokens/:id/toggle",
             put(token_handlers::toggle_token),
         )
-        // Usage/Dashboard API routes 鈥?all require auth
+        // Usage/Dashboard API routes - all require auth
         .route("/admin/logs", get(usage_handlers::get_logs))
         .route(
             "/admin/dashboard/stats",

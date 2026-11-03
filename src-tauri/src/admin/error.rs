@@ -28,7 +28,7 @@ pub const ERROR_CODE_HTTP_CLIENT_ERROR: &str = "HTTP_CLIENT_ERROR";
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum AdminError {
-    // 认证与授权
+    // Authentication & Authorization
     Unauthorized,
     Forbidden,
     RateLimited {
@@ -37,18 +37,18 @@ pub enum AdminError {
         locked_until: i64,
     },
 
-    // 请求错误
+    // Request errors
     BadRequest(String),
     NotFound(String),
 
-    // 冲突与版本控制
+    // Conflict & version control
     Conflict {
         code: &'static str,
         message: String,
         details: Option<serde_json::Value>,
     },
 
-    // 业务错误
+    // Business errors
     PortInUse {
         port: i32,
     },
@@ -61,7 +61,7 @@ pub enum AdminError {
     },
     EmptyModelList,
 
-    // 超时与网络
+    // Timeout & network
     Timeout {
         url: Option<String>,
     },
@@ -73,7 +73,7 @@ pub enum AdminError {
         locked_until: Option<i64>,
     },
 
-    // 通用内部错误
+    // General internal errors
     Internal(String),
 }
 

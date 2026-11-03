@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "identifier": "com.api-switch.app",
+  "identifier": "com.smart-api-gateway.app",
   "app": {
     "security": {
       "csp": null

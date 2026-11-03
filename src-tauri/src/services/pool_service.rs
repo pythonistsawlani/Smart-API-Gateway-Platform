@@ -285,7 +285,7 @@ pub async fn test_entry_latency(
         .apply_auth(client.post(&url), primary_api_key(&channel.api_key))
         .json(&upstream_body);
 
-    // 使用渠道配置的 upstream_headers 替代硬编码头部注入
+    // Use channel-configured upstream_headers instead of hardcoded header injection
     request = crate::services::upstream_headers::apply_upstream_headers(
         request,
         channel.upstream_headers.as_deref(),
@@ -453,7 +453,7 @@ pub async fn test_entry_latency(
     let response_ms = latency_ms.to_string();
     db.update_entry_response_ms(entry_id, &response_ms)?;
     let score = update_score(&response_ms);
-    // 启用 entry 并清理冷却，确保后续自动路由能命中
+    // Enable entry and clear cooldown, ensuring subsequent automatic routing can hit
     db.toggle_entry(entry_id, true)?;
     let _ = db.set_entry_cooldown(entry_id, None);
     insert_test_usage_log(

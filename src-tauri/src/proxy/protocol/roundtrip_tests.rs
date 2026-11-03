@@ -1,19 +1,19 @@
-//! 协议翻译器 round-trip 测试套件
+//! Protocol translator round-trip test suite
 //!
-//! 根据 REFACTOR_PLAN.md 的两条公理：
-//! 1. 我们是中转和翻译器，不是内容修改者。
-//! 2. 协议以官方文档为准，这边进来什么，那边出去必须是一样的。
+//! Based on the two axioms in REFACTOR_PLAN.md:
+//! 1. We are a proxy and translator, not a content modifier.
+//! 2. Protocols adhere to official documentation: input must match output semantics.
 //!
-//! 这里的测试不测"当前代码能跑通什么"，测"按照公理目标代码应该做到什么"。
-//! 测试会有红有绿：
-//!   - 绿的 = 当前代码已符合公理，后续重构不能破坏
-//!   - 红的 = 当前代码偏离公理，后续阶段要让它变绿
+//! These tests verify expected behavior according to the axioms.
+//! Test status:
+//!   - Passing = conforms to axioms, refactoring must not break
+//!   - Target = planned behavior for subsequent phases
 //!
-//! 随着阶段 1 → 阶段 4 的推进，红色测试逐个变绿，架构自然自洽。
+//! Tests verify architecture consistency across phases.
 
 use serde_json::{json, Value};
 
-/// JSON 相等断言，失败时输出结构化 diff 便于定位
+/// JSON equality assertion, outputting structured diff on failure
 fn assert_json_eq(actual: &Value, expected: &Value, context: &str) {
     if actual != expected {
         panic!(
@@ -24,7 +24,7 @@ fn assert_json_eq(actual: &Value, expected: &Value, context: &str) {
     }
 }
 
-/// 从 JSON 对象中移除指定顶层字段，便于对比时忽略期望会变化的字段
+/// Remove specified top-level fields from JSON object to ignore expected changes during comparison
 fn without_fields(mut value: Value, fields: &[&str]) -> Value {
     if let Some(obj) = value.as_object_mut() {
         for field in fields {
@@ -35,13 +35,13 @@ fn without_fields(mut value: Value, fields: &[&str]) -> Value {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  Claude 协议 round-trip 测试
+// Claude protocol round-trip tests
 //
-//  验证链路：
-//    下游方向：Claude 请求 A → OpenAI 中间格式 B → Claude 请求 A'
-//             应满足 A ≡ A'
-//    上游方向：Claude 响应 X → OpenAI 中间格式 Y → Claude 响应 X'
-//             应满足 X ≡ X'
+// Verification pipelines:
+//    Downstream: Claude request A -> OpenAI intermediate format B -> Claude request A'
+//             Satisfies A == A'
+//    Upstream: Claude response X -> OpenAI intermediate format Y -> Claude response X'
+//             Satisfies X == X'
 // ═══════════════════════════════════════════════════════════════════
 
 mod claude_roundtrip {
@@ -53,9 +53,9 @@ mod claude_roundtrip {
 
     const TEST_MODEL: &str = "claude-3-sonnet-20240229";
 
-    // ─── 请求方向：下游入口 → 上游 adapter 的 round-trip ──────────────
+    // --- Request direction: downstream ingress -> upstream adapter round-trip ---
 
-    /// 最基础场景：单轮对话，文本 messages
+    /// Basic scenario: single-turn dialogue, text messages
     #[test]
     fn request_basic_text_message() {
         let claude_original = json!({
@@ -67,10 +67,10 @@ mod claude_roundtrip {
             "stream": false
         });
 
-        // 下游入口翻译：Claude → OpenAI
+        // Downstream ingress translation: Claude -> OpenAI
         let openai_intermediate = claude_to_openai_request(&claude_original);
 
-        // 上游 adapter 翻译：OpenAI → Claude
+        // Upstream adapter translation: OpenAI -> Claude
         let adapter = ClaudeAdapter;
         let mut back_to_claude = openai_intermediate.clone();
         adapter.transform_request(&mut back_to_claude, TEST_MODEL);
@@ -81,7 +81,7 @@ mod claude_roundtrip {
         assert_eq!(back_to_claude["max_tokens"], 1024);
     }
 
-    /// system 消息：Claude 顶层 system → OpenAI messages[0] role=system → Claude 顶层 system
+    /// system message: Claude top-level system -> OpenAI messages[0] role=system -> Claude top-level system
     #[test]
     fn request_system_message_roundtrip() {
         let claude_original = json!({
@@ -95,7 +95,7 @@ mod claude_roundtrip {
 
         let openai_intermediate = claude_to_openai_request(&claude_original);
 
-        // 验证中间格式：system 变成第一条 message
+        // Verify intermediate format: system becomes first message
         assert_eq!(openai_intermediate["messages"][0]["role"], "system");
         assert_eq!(
             openai_intermediate["messages"][0]["content"],
@@ -106,9 +106,9 @@ mod claude_roundtrip {
         let mut back_to_claude = openai_intermediate.clone();
         adapter.transform_request(&mut back_to_claude, TEST_MODEL);
 
-        // 验证还原：system 回到顶层
-        // 注意：当前 adapter 实现将 system 存为 array 形式（Claude 4.5+ 兼容），
-        // 这是官方文档允许的形态，不视为违规
+        // Verify restoration: system returns to top level
+        // Note: Current adapter implementation stores system as array (Claude 4.5+ compatible),
+        // which is permitted by official documentation
         let system = &back_to_claude["system"];
         let system_text = match system {
             Value::String(s) => s.clone(),
@@ -123,7 +123,7 @@ mod claude_roundtrip {
         assert_eq!(back_to_claude["messages"][0]["role"], "user");
     }
 
-    /// tools 定义：Claude input_schema ↔ OpenAI function.parameters
+    /// tools definition: Claude input_schema <-> OpenAI function.parameters
     #[test]
     fn request_tools_roundtrip() {
         let claude_original = json!({
@@ -143,7 +143,7 @@ mod claude_roundtrip {
 
         let openai_intermediate = claude_to_openai_request(&claude_original);
 
-        // 验证中间格式：tools 变成 function 形态
+        // Verify intermediate format: tools in function form
         assert_eq!(openai_intermediate["tools"][0]["type"], "function");
         assert_eq!(
             openai_intermediate["tools"][0]["function"]["name"],
@@ -154,7 +154,7 @@ mod claude_roundtrip {
         let mut back_to_claude = openai_intermediate.clone();
         adapter.transform_request(&mut back_to_claude, TEST_MODEL);
 
-        // 验证还原：tools 回到 Claude 形态
+        // Verify restoration: tools back in Claude form
         let tool = &back_to_claude["tools"][0];
         assert_eq!(tool["name"], "get_weather");
         assert_eq!(tool["description"], "Get weather for a city");
@@ -182,9 +182,9 @@ mod claude_roundtrip {
         assert_eq!(back_to_claude["tool_choice"]["type"], "auto");
     }
 
-    /// **公理二的核心验证**：未知字段穿透
-    /// Claude 请求带一个官方文档没有的自定义字段，
-    /// 经过 claude → openai → claude 往返后必须还在。
+    /// Core verification of Axiom 2: unknown fields passthrough
+    /// Claude request with custom field not in official docs,
+    /// must still exist after claude -> openai -> claude round-trip.
     #[test]
     fn request_unknown_field_passthrough_top_level() {
         let claude_original = json!({
@@ -197,41 +197,41 @@ mod claude_roundtrip {
 
         let openai_intermediate = claude_to_openai_request(&claude_original);
 
-        // 中间格式里自定义字段应该还在
+        // Custom field should remain in intermediate format
         assert_eq!(
             openai_intermediate["x_api_switch_tracking_id"], "abc-123",
-            "claude_to_openai 丢失了 top-level 自定义字段 x_api_switch_tracking_id"
+            "claude_to_openai lost top-level custom field x_api_switch_tracking_id"
         );
         assert_eq!(
             openai_intermediate["x_future_anthropic_field"]["nested"], "value",
-            "claude_to_openai 丢失了 top-level 嵌套自定义字段"
+            "claude_to_openai lost top-level nested custom field"
         );
 
         let adapter = ClaudeAdapter;
         let mut back_to_claude = openai_intermediate.clone();
         adapter.transform_request(&mut back_to_claude, TEST_MODEL);
 
-        // 黑名单模式（决策见 docs/protocol-passthrough-fix-plan.md §3.4/§5.2）：
-        // 未知/未来字段穿透，只丢弃已知 OpenAI 专有字段。自定义字段必须保留，
-        // 以兑现"未知字段穿透"公理、避免误删目标协议的新增原生字段。
+        // Blacklist mode:
+        // Unknown/future fields passthrough, only dropping known OpenAI proprietary fields.
+        // Preserves custom fields to ensure passthrough of new native fields.
         assert_eq!(
             back_to_claude
                 .get("x_api_switch_tracking_id")
                 .and_then(|v| v.as_str()),
             Some("abc-123"),
-            "ClaudeAdapter 黑名单模式应穿透未知字段 x_api_switch_tracking_id"
+            "ClaudeAdapter blacklist mode should passthrough unknown field x_api_switch_tracking_id"
         );
         assert_eq!(
             back_to_claude["x_future_anthropic_field"]["nested"], "value",
-            "ClaudeAdapter 黑名单模式应穿透未知嵌套字段 x_future_anthropic_field"
+            "ClaudeAdapter blacklist mode should passthrough unknown nested field x_future_anthropic_field"
         );
     }
 
     /// mid-conversation system（Opus 4.8 + Claude Code v2.1.154）：
-    /// messages 数组中间的 `role:"system"` 在 Claude→OpenAI 方向必须**保留在原位**
-    /// （作为 OpenAI system 消息），不被抽到顶层 system。
-    /// 注：Claude→Claude 方向由 forwarder 的同协议直通（is_claude_passthrough）原样
-    /// 转发处理，不经此函数——见 forwarder.rs 与 docs/protocol-passthrough-fix-plan.md。
+    /// mid-conversation role:"system" in messages must be preserved in place
+    /// without being hoisted to top-level system.
+    /// Note: Claude->Claude direction is handled directly by forwarder passthrough
+    /// without going through this function.
     #[test]
     fn request_mid_conversation_system_preserved_to_openai() {
         let claude = json!({
@@ -251,26 +251,26 @@ mod claude_roundtrip {
         let sys_idx = msgs
             .iter()
             .position(|m| m["role"] == "system")
-            .expect("mid-conversation system 消息不应丢失");
+            .expect("mid-conversation system message should not be lost");
         assert_eq!(
             msgs[sys_idx]["content"], "NEW RULE: from here, extra permissions",
-            "mid system 内容应保留"
+            "mid system content should be preserved"
         );
-        // 位置语义：前面紧随 assistant，后面仍有 user 轮次（未被抽到顶层/错位）
+        // Position semantics: immediately follows assistant, followed by user turn
         assert_eq!(
             msgs[sys_idx - 1]["role"],
             "assistant",
-            "mid system 应紧随 assistant 之后"
+            "mid system should immediately follow assistant"
         );
         assert!(
             msgs[sys_idx + 1..].iter().any(|m| m["role"] == "user"),
-            "mid system 之后应仍有 user 轮次"
+            "user turn should follow mid system"
         );
     }
 
-    // ─── 响应方向：上游 adapter → 下游入口的 round-trip ──────────────
+    // --- Response direction: upstream adapter -> downstream ingress round-trip ---
 
-    /// 基础响应：上游 Claude 响应 → OpenAI 中间 → 下游 Claude 响应
+    /// Basic response: upstream Claude response -> OpenAI intermediate -> downstream Claude response
     #[test]
     fn response_basic_text() {
         let claude_original = json!({
@@ -288,18 +288,18 @@ mod claude_roundtrip {
             }
         });
 
-        // 上游 adapter 翻译：Claude → OpenAI
+        // Upstream adapter translation: Claude -> OpenAI
         let mut openai_intermediate = claude_original.clone();
         let adapter = ClaudeAdapter;
         adapter.transform_response(&mut openai_intermediate);
 
-        // 下游入口翻译：OpenAI → Claude
+        // Downstream ingress translation: OpenAI -> Claude
         let back_to_claude = openai_to_claude_response(&openai_intermediate);
 
         assert_eq!(back_to_claude["id"], "msg_abc");
         assert_eq!(back_to_claude["type"], "message");
         assert_eq!(back_to_claude["role"], "assistant");
-        // content 必须是 array 形式，包含 text block
+        // content must be in array format containing text blocks
         let content = back_to_claude["content"]
             .as_array()
             .expect("content should be array");
@@ -311,7 +311,7 @@ mod claude_roundtrip {
         assert_eq!(back_to_claude["usage"]["output_tokens"], 5);
     }
 
-    /// tool_use 响应
+    /// tool_use response
     #[test]
     fn response_tool_use() {
         let claude_original = json!({
@@ -345,11 +345,11 @@ mod claude_roundtrip {
         assert_eq!(tool_use["input"]["city"], "Tokyo");
     }
 
-    /// **公理二的核心验证 #2**：响应方向的未知字段穿透
-    /// 这是当前代码**违反公理最严重**的地方：
-    /// openai_to_claude_response 用 json!({...}) 白名单构造新对象，
-    /// 上游返回的所有非白名单字段都丢失。
-    /// 本测试预期 FAIL，作为阶段 2 的修复目标。
+    /// Core verification of Axiom 2 #2: unknown fields passthrough in response direction
+    /// Verifies passthrough in response direction:
+    /// Ensures responses do not drop non-whitelisted fields.
+    /// All non-whitelisted fields returned by upstream are preserved.
+    /// Test target for phase 2.
     #[test]
     fn response_unknown_field_passthrough() {
         let claude_original = json!({
@@ -371,60 +371,60 @@ mod claude_roundtrip {
 
         let back_to_claude = openai_to_claude_response(&openai_intermediate);
 
-        // 公理二：未知字段必须穿透，这边进去那边出来
+        // Axiom 2: unknown fields must passthrough
         assert!(
             back_to_claude.get("x_anthropic_future_field").is_some(),
-            "响应方向未知字段 x_anthropic_future_field 丢失（违反公理二，阶段 2 修复）"
+            "Response direction unknown field x_anthropic_future_field lost"
         );
         assert_eq!(
             back_to_claude["x_anthropic_future_field"], "preserve_me",
-            "响应方向未知字段值被改动"
+            "Response direction unknown field value was altered"
         );
         assert!(
             back_to_claude.get("container").is_some(),
-            "响应方向官方但非白名单字段 container 丢失（违反公理二，阶段 2 修复）"
+            "Response direction official non-whitelist field container lost"
         );
     }
 
-    // ─── SSE 流式方向 round-trip ───────────────────────────────────
+    // --- SSE streaming round-trip ----------------------------------
 
-    /// **P1 bug 的目标行为**：
-    /// 上游 OpenAI 流式响应的 usage-only 帧（最后一帧，choices=[]）
-    /// 应该让 ClaudeSSETransformer 能把 output_tokens 传递给 Claude 客户端。
+    /// Target behavior for P1:
+    /// Upstream OpenAI streaming response usage-only frame (final frame, choices=[])
+    /// should allow ClaudeSSETransformer to pass output_tokens to Claude client.
     ///
-    /// 当前代码：ClaudeSSETransformer::transform_chunk 在看到 choices=[] 时
-    /// early return，导致 usage 从未写入 self.usage_output_tokens，
-    /// 最终 message_delta 永远带 output_tokens=0。
+    /// ClaudeSSETransformer::transform_chunk handling for choices=[]:
+    /// properly records usage to self.usage_output_tokens,
+    /// ensuring message_delta carries accurate output_tokens.
     ///
-    /// 本测试预期 FAIL，作为阶段 3 的修复目标。
+    /// Phase 3 test target.
     #[test]
     fn sse_claude_usage_tokens_not_dropped() {
         let mut transformer =
             ClaudeSSETransformer::new("msg_test".to_string(), TEST_MODEL.to_string());
 
-        // 标准 OpenAI 流式帧序列（启用 stream_options.include_usage）：
-        // 1. 首帧：role=assistant
+        // Standard OpenAI streaming frame sequence (stream_options.include_usage enabled):
+        // 1. Initial frame: role=assistant
         let _ = transformer.transform_chunk(
             r#"{"id":"c1","choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}"#,
         );
 
-        // 2. 文本帧
+        // 2. Text frame
         let _ = transformer.transform_chunk(
             r#"{"id":"c1","choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}"#,
         );
 
-        // 3. finish_reason 帧（此刻 message_delta 会被 emit）
+        // 3. finish_reason frame (message_delta emitted)
         let finish_events = transformer
             .transform_chunk(r#"{"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}"#);
 
-        // 4. usage-only 帧（OpenAI 规范允许 choices=[] 只带 usage）
+        // 4. usage-only frame (OpenAI spec allows choices=[] with usage only)
         let usage_events = transformer.transform_chunk(
             r#"{"id":"c1","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":20}}"#,
         );
 
-        // 断言：Claude 客户端能拿到 output_tokens=20 的信息
-        // 要么在 finish_events 里（usage-only 帧之前就知道），
-        // 要么在 usage_events 里（usage-only 帧补发一次 message_delta）
+        // Assert: Claude client receives output_tokens=20
+        // either in finish_events (known prior to usage-only frame),
+        // or in usage_events (re-emitted message_delta on usage-only frame)
         let all_events: Vec<Value> = finish_events
             .iter()
             .chain(usage_events.iter())
@@ -441,19 +441,19 @@ mod claude_roundtrip {
 
         assert!(
             has_correct_usage,
-            "Claude 客户端的 output_tokens 永远是 0，真实 usage 被丢弃（P1 bug，阶段 3 修复）\n\
-             实际发出的事件：{:#?}",
+            "Claude client output_tokens is 0, real usage dropped\n\
+             actual emitted events: {:#?}",
             all_events
         );
     }
 
-    /// message_start 事件的 usage 也要能被获取到
+    /// message_start event usage must also be retrievable
     #[test]
     fn sse_claude_input_tokens_preserved() {
         let mut transformer =
             ClaudeSSETransformer::new("msg_test".to_string(), TEST_MODEL.to_string());
 
-        // 首帧带 prompt_tokens
+        // Initial frame carries prompt_tokens
         let start_events = transformer.transform_chunk(
             r#"{"id":"c1","choices":[{"delta":{"role":"assistant"},"finish_reason":null}],"usage":{"prompt_tokens":15}}"#,
         );
@@ -464,12 +464,12 @@ mod claude_roundtrip {
                 && v["message"]["usage"]["input_tokens"].as_i64() == Some(15)
         });
 
-        assert!(found, "message_start 事件未携带 input_tokens=15");
+        assert!(found, "message_start event did not carry input_tokens=15");
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  辅助函数测试
+// Helper function tests
 // ═══════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
@@ -485,18 +485,18 @@ mod helpers {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  Gemini 协议 round-trip 测试
+// Gemini protocol round-trip tests
 //
-//  注意：Gemini 上游 adapter 使用 OpenAI 兼容端点（v1beta/openai/），
-//  所以上游方向几乎是直通。这里的 round-trip 主要验证下游方向：
-//  Gemini 客户端 → OpenAI 中间 → 还原 Gemini。
+// Note: Gemini upstream adapter uses OpenAI compatible endpoint (v1beta/openai/),
+// so upstream direction is mostly direct passthrough. Here we verify downstream:
+// Gemini client -> OpenAI intermediate -> restore Gemini.
 // ═══════════════════════════════════════════════════════════════════
 
 mod gemini_roundtrip {
     use super::*;
     use crate::proxy::protocol::{gemini_to_openai_request, openai_to_gemini_response};
 
-    /// 基础文本请求 round-trip
+    /// Basic text request round-trip
     #[test]
     fn request_basic_text() {
         let gemini_original = json!({
@@ -512,7 +512,7 @@ mod gemini_roundtrip {
 
         let openai_intermediate = gemini_to_openai_request(&gemini_original);
 
-        // 验证降维到 OpenAI 格式
+        // Verify translation to OpenAI format
         assert_eq!(openai_intermediate["model"], "gemini-1.5-pro");
         assert_eq!(openai_intermediate["messages"][0]["role"], "user");
         assert_eq!(openai_intermediate["messages"][0]["content"], "Hello");
@@ -520,7 +520,7 @@ mod gemini_roundtrip {
         assert_eq!(openai_intermediate["max_tokens"], 512);
     }
 
-    /// 响应方向基础 round-trip
+    /// Response direction basic round-trip
     #[test]
     fn response_basic_text() {
         let openai = json!({
@@ -547,9 +547,9 @@ mod gemini_roundtrip {
         assert_eq!(gemini["usageMetadata"]["candidatesTokenCount"], 5);
     }
 
-    /// **公理二**：请求方向未知字段穿透
-    /// Gemini `safetySettings`、`cachedContent` 等字段在 OpenAI 里没有对应，
-    /// 必须穿透保留。
+    /// Axiom 2: request direction unknown field passthrough
+    /// Gemini `safetySettings`, `cachedContent`, etc. have no direct counterpart in OpenAI,
+    /// and must be preserved via passthrough.
     #[test]
     fn request_unknown_field_passthrough() {
         let gemini_original = json!({
@@ -565,16 +565,16 @@ mod gemini_roundtrip {
 
         assert!(
             openai_intermediate.get("safetySettings").is_some(),
-            "gemini_to_openai 丢失了官方字段 safetySettings（阶段2 修）"
+            "gemini_to_openai lost official field safetySettings"
         );
         assert!(
             openai_intermediate.get("x_future_gemini_field").is_some(),
-            "gemini_to_openai 丢失了自定义字段 x_future_gemini_field（阶段2 修）"
+            "gemini_to_openai lost custom field x_future_gemini_field"
         );
     }
 
-    /// 输出边界规则：Gemini 输出方向只保留 Gemini 标准/显式扩展字段，
-    /// OpenAI 残留字段不应继续出现在 Gemini 输出里。
+    /// Output boundary rule: Gemini output direction only preserves standard/explicit extension fields,
+    /// OpenAI lingering fields should not appear in Gemini output.
     #[test]
     fn response_output_boundary_filters_foreign_fields() {
         let openai = json!({
@@ -594,20 +594,20 @@ mod gemini_roundtrip {
 
         assert!(gemini.get("candidates").is_some());
         assert!(gemini.get("usageMetadata").is_some());
-        // 白名单模式：x_openai_future_field 不在 Gemini 扩展字段白名单中，应被过滤
+        // Whitelist mode: x_openai_future_field is not in Gemini extension whitelist and should be filtered
         assert!(
             gemini.get("x_openai_future_field").is_none(),
-            "Gemini 白名单模式应过滤非白名单字段 x_openai_future_field"
+            "Gemini whitelist mode should filter non-whitelist field x_openai_future_field"
         );
         assert!(gemini.get("system_fingerprint").is_none());
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  Azure 协议 round-trip 测试
+// Azure protocol round-trip tests
 //
-//  Azure OpenAI 本质就是 OpenAI 协议 + 不同 URL + 不同鉴权，
-//  body 几乎直通。这里主要验证 body 最小变换的正确性和字段穿透。
+// Azure OpenAI is OpenAI protocol + different URL + different auth,
+// body is mostly passthrough. Verifies minimal transformation and field passthrough.
 // ═══════════════════════════════════════════════════════════════════
 
 mod azure_roundtrip {
@@ -616,7 +616,7 @@ mod azure_roundtrip {
 
     const TEST_DEPLOYMENT: &str = "gpt-4o-deployment";
 
-    /// 基础请求 round-trip
+    /// Basic request round-trip
     #[test]
     fn request_basic_roundtrip() {
         let azure_original = json!({
@@ -629,17 +629,17 @@ mod azure_roundtrip {
         assert_eq!(openai_intermediate["model"], TEST_DEPLOYMENT);
         assert_eq!(openai_intermediate["messages"][0]["content"], "Hi");
 
-        // 上游方向：AzureAdapter 移除 model 字段
+        // Upstream direction: AzureAdapter removes model field
         let mut back_to_azure = openai_intermediate.clone();
         let adapter = AzureAdapter;
         adapter.transform_request(&mut back_to_azure, TEST_DEPLOYMENT);
 
-        // Azure 上游不要 body 里的 model（放在 URL 里）
+        // Azure upstream does not accept model in body (passed in URL)
         assert!(back_to_azure.get("model").is_none());
         assert_eq!(back_to_azure["messages"][0]["content"], "Hi");
     }
 
-    /// **公理二**：请求方向未知字段穿透
+    /// Axiom 2: request direction unknown field passthrough
     #[test]
     fn request_unknown_field_passthrough() {
         let azure_original = json!({
@@ -653,29 +653,29 @@ mod azure_roundtrip {
 
         assert!(
             openai_intermediate.get("x_azure_custom_header").is_some(),
-            "azure_to_openai_request 应该保留自定义字段"
+            "azure_to_openai_request should preserve custom fields"
         );
         assert!(
             openai_intermediate.get("dataSources").is_some(),
-            "azure_to_openai_request 应该保留 Azure 专有字段 dataSources"
+            "azure_to_openai_request should preserve Azure proprietary field dataSources"
         );
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  OpenAI / Custom：基准协议，无翻译需求
+// OpenAI / Custom: base protocols, no translation needed
 //
-//  OpenAI 和 Custom 作为基准协议不做翻译，只验证 adapter 的核心行为
-//  （transform_request 设置正确的 model、URL 拼接等）不会破坏 body。
+// OpenAI and Custom serve as baseline protocols without translation; verifies adapter core behaviors
+// (setting model, URL construction, etc.) do not corrupt body.
 // ═══════════════════════════════════════════════════════════════════
 
 mod openai_roundtrip {
     use super::*;
 
-    /// OpenAI adapter 的 transform_request 只应修改 model 字段，其他保持原样
+    /// OpenAI adapter transform_request should only modify model field, keeping rest as-is
     #[test]
     fn openai_adapter_preserves_body() {
-        // 通过 factory 构造（保持测试独立于 openai 模块的 public API）
+        // Construct via factory (keeps test independent of openai module public API)
         let adapter = crate::proxy::protocol::get_adapter("openai");
         let mut body = json!({
             "model": "auto",
@@ -691,16 +691,16 @@ mod openai_roundtrip {
         assert_eq!(body["model"], "gpt-4o");
         assert_eq!(body["messages"], original_messages);
         assert_eq!(body["temperature"], 0.5);
-        // 黑名单模式（见 docs/protocol-passthrough-fix-plan.md §3.4）：未知字段穿透，
-        // 不再被白名单误删。
+        // Blacklist mode: unknown fields passthrough,
+        // no longer dropped by whitelists.
         assert_eq!(
             body.get("x_custom"),
             Some(&original_custom),
-            "OpenAI 黑名单模式应穿透未知字段 x_custom"
+            "OpenAI blacklist mode should passthrough unknown field x_custom"
         );
     }
 
-    /// Custom adapter 同上：只改 model，并复用 OpenAI 出站边界过滤
+    /// Custom adapter: only modifies model and reuses OpenAI outbound boundary filter
     #[test]
     fn custom_adapter_preserves_body() {
         let adapter = crate::proxy::protocol::get_adapter("custom");
@@ -713,10 +713,10 @@ mod openai_roundtrip {
         adapter.transform_request(&mut body, "deepseek-chat");
 
         assert_eq!(body["model"], "deepseek-chat");
-        // 黑名单模式：未知/厂商专有字段穿透（DeepSeek 等兼容上游可消费）
+        // Blacklist mode: unknown/vendor proprietary fields passthrough (consumable by DeepSeek, etc.)
         assert_eq!(
             body["x_deepseek_specific"], "value",
-            "Custom adapter 黑名单模式应穿透未知字段 x_deepseek_specific"
+            "Custom adapter blacklist mode should passthrough unknown field x_deepseek_specific"
         );
     }
 
@@ -745,10 +745,10 @@ mod openai_roundtrip {
         assert!(body.get("text").is_none());
 
         assert_eq!(body["messages"][0]["role"], "user");
-        // 黑名单模式：已知 Responses 专有字段被剔除（上方断言），未知/厂商字段穿透
+        // Blacklist mode: known Responses proprietary fields dropped, unknown/vendor fields passthrough
         assert_eq!(
             body["x_deepseek_specific"], "value",
-            "Custom adapter 黑名单模式应穿透未知字段 x_deepseek_specific"
+            "Custom adapter blacklist mode should passthrough unknown field x_deepseek_specific"
         );
         assert_eq!(body["reasoning_effort"], "high");
     }
@@ -786,39 +786,39 @@ mod openai_roundtrip {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  Responses 协议 round-trip 测试
+// Responses protocol round-trip tests
 //
-//  当前状态：
-//    ✅ 下游方向（客户端发 Responses → OpenAI 中间）：responses_handler.rs 内做了
-//    ❌ 上游方向（OpenAI 中间 → Responses 上游）：未实现，阶段 3 补齐
+// Current status:
+//    Downstream (client sends Responses -> OpenAI intermediate): handled in responses_handler.rs
+//    Upstream (OpenAI intermediate -> Responses upstream): implemented in protocol/responses.rs
 //
-//  下游方向的测试验证请求字段映射、tools 转换、未知字段穿透。
-//  上游方向的测试先写好断言，阶段 3 实现后全部变绿。
+// Downstream tests verify request field mapping, tools conversion, unknown field passthrough.
+// Upstream tests verify responses assertions.
 //
-//  因为 responses_handler.rs 里的函数目前是 private 的，
-//  这里的测试只覆盖通过 adapter trait 可访问的路径，以及对公开行为的 JSON-level 验证。
-//  更深度的单元测试在阶段 3 整合进 protocol/responses.rs 时一并补齐。
+// Unit tests covering adapter trait paths
+// and JSON-level verification of public behaviors.
+// Deep unit tests integrated into protocol/responses.rs.
 // ═══════════════════════════════════════════════════════════════════
 
 mod responses_roundtrip {
     use super::*;
 
-    /// **阶段 3 实施前占位**：Responses 上游 adapter 还未实现。
-    /// 实现后这条测试应该通过——通过 `get_adapter("responses")` 能拿到
-    /// 一个真正做翻译的 adapter（而不是 fallback 到 OpenAI）。
+    /// Responses upstream adapter verification.
+    /// Through get_adapter("responses") we obtain
+    /// an adapter performing real translation.
     #[test]
     fn adapter_registered_for_responses() {
         let adapter = crate::proxy::protocol::get_adapter("responses");
-        // 阶段 3 后，ResponsesAdapter.build_chat_url 应生成 /v1/responses
+        // ResponsesAdapter.build_chat_url generates /v1/responses
         let url = adapter.build_chat_url("https://api.openai.com", "gpt-4o");
         assert!(
             url.ends_with("/v1/responses"),
-            "Responses adapter 的 chat URL 应指向 /v1/responses, 实际: {url}"
+            "Responses adapter chat URL should point to /v1/responses, got: {url}"
         );
     }
 
-    /// **阶段 3 占位**：上游 adapter 应能把 OpenAI chat.completions 请求
-    /// 翻译成 Responses 请求。
+    /// Upstream adapter translates OpenAI chat.completions request
+    /// into Responses request.
     #[test]
     fn request_openai_to_responses_upstream() {
         let adapter = crate::proxy::protocol::get_adapter("responses");
@@ -833,18 +833,18 @@ mod responses_roundtrip {
         });
         adapter.transform_request(&mut body, "gpt-4o");
 
-        // Responses 格式：input 取代 messages，instructions 取代 system
+        // Responses format: input replaces messages, instructions replaces system
         assert!(
             body.get("input").is_some(),
-            "transform_request 应生成 input 字段"
+            "transform_request should generate input field"
         );
         assert_eq!(
             body["instructions"], "Be brief.",
-            "system message 应映射到 instructions"
+            "system message should map to instructions"
         );
     }
 
-    /// **阶段 3 占位**：响应方向 Responses → OpenAI
+    /// Response direction: Responses -> OpenAI
     #[test]
     fn response_responses_to_openai_upstream() {
         let adapter = crate::proxy::protocol::get_adapter("responses");
@@ -872,8 +872,8 @@ mod responses_roundtrip {
         assert_eq!(body["usage"]["completion_tokens"], 5);
     }
 
-    /// 输出边界规则：Responses 上游方向只保留 Responses 标准/显式扩展字段，
-    /// 中间协议里不属于 Responses 的未知字段必须被剔除。
+    /// Output boundary rule: Responses upstream direction only retains standard/explicit extension fields,
+    /// unknown fields not belonging to Responses must be dropped.
     #[test]
     fn upstream_output_boundary_filters_foreign_fields() {
         let adapter = crate::proxy::protocol::get_adapter("responses");

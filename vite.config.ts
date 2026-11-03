@@ -16,7 +16,7 @@ let mockSettings: Record<string, string | number | boolean> = {
   circuit_retry_codes: "100-199,300-399,401-407,409-499,500-503,505-523,525-599",
   disable_keywords: "Your credit balance is too low",
   keyword_freeze_scope: "model",
-  locale: "zh",
+  locale: "en",
   theme: "light",
   show_guide: "1",
   autostart: "0",

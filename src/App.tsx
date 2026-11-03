@@ -82,7 +82,7 @@ function MainApp({ onLogout }: { onLogout?: () => void }) {
   useEffect(() => {
     if (!isDesktop) return;
     import("@tauri-apps/api/app").then(({ getVersion }) => {
-      getVersion().then((v: string) => { document.title = `API-Switch - ${v}`; });
+      getVersion().then((v: string) => { document.title = `Smart API Gateway - ${v}`; });
     });
   }, [isDesktop]);
 
@@ -104,7 +104,7 @@ function MainApp({ onLogout }: { onLogout?: () => void }) {
 
   useEffect(() => {
     if (!settings) return;
-    const saved = localStorage.getItem("api-switch-locale");
+    const saved = localStorage.getItem("smart-api-gateway-locale");
     if (!saved && settings.locale) i18n.changeLanguage(settings.locale);
     const root = document.documentElement;
     if (settings.theme === "dark") root.classList.add("dark");

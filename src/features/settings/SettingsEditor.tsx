@@ -51,6 +51,12 @@ export function SettingsEditor({
     s.circuit_disable_codes,
   );
   const [editAdminPort, setEditAdminPort] = useState(s.web_admin_port);
+  const [editRateIp, setEditRateIp] = useState(s.rate_limit_rpm_per_ip);
+  const [editRateKey, setEditRateKey] = useState(s.rate_limit_rpm_per_key);
+  const [editRateModel, setEditRateModel] = useState(s.rate_limit_rpm_per_model);
+  const [editCorsOrigins, setEditCorsOrigins] = useState(s.cors_allowed_origins);
+  const [editTlsCert, setEditTlsCert] = useState(s.tls_cert_path);
+  const [editTlsKey, setEditTlsKey] = useState(s.tls_key_path);
   const usernameEditing = useRef(false);
   const passwordEditing = useRef(false);
   const portEditing = useRef(false);
@@ -58,6 +64,12 @@ export function SettingsEditor({
   const timeoutEditing = useRef(false);
   const disableCodesEditing = useRef(false);
   const adminPortEditing = useRef(false);
+  const rateIpEditing = useRef(false);
+  const rateKeyEditing = useRef(false);
+  const rateModelEditing = useRef(false);
+  const corsOriginsEditing = useRef(false);
+  const tlsCertEditing = useRef(false);
+  const tlsKeyEditing = useRef(false);
 
   // Sync from props when not actively editing
   useEffect(() => {
@@ -90,6 +102,24 @@ export function SettingsEditor({
   useEffect(() => {
     if (!adminPortEditing.current) setEditAdminPort(s.web_admin_port);
   }, [s.web_admin_port]);
+  useEffect(() => {
+    if (!rateIpEditing.current) setEditRateIp(s.rate_limit_rpm_per_ip);
+  }, [s.rate_limit_rpm_per_ip]);
+  useEffect(() => {
+    if (!rateKeyEditing.current) setEditRateKey(s.rate_limit_rpm_per_key);
+  }, [s.rate_limit_rpm_per_key]);
+  useEffect(() => {
+    if (!rateModelEditing.current) setEditRateModel(s.rate_limit_rpm_per_model);
+  }, [s.rate_limit_rpm_per_model]);
+  useEffect(() => {
+    if (!corsOriginsEditing.current) setEditCorsOrigins(s.cors_allowed_origins);
+  }, [s.cors_allowed_origins]);
+  useEffect(() => {
+    if (!tlsCertEditing.current) setEditTlsCert(s.tls_cert_path);
+  }, [s.tls_cert_path]);
+  useEffect(() => {
+    if (!tlsKeyEditing.current) setEditTlsKey(s.tls_key_path);
+  }, [s.tls_key_path]);
 
   return (
     <div className="space-y-6">
@@ -338,9 +368,9 @@ export function SettingsEditor({
               min={30}
               max={1800}
               step={30}
-              value={[s.circuit_recovery_secs]}
+              value={s.circuit_recovery_secs as any}
               onValueChange={(value) =>
-                onChange("circuit_recovery_secs", value[0])
+                onChange("circuit_recovery_secs", value as any)
               }
             />
             <p className="text-xs text-muted-foreground">30s – 1800s</p>
@@ -399,6 +429,195 @@ export function SettingsEditor({
                 </SelectItem>
               </SelectContent>
             </Select>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">
+            {t("settings.rateLimit.title")}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <Label>{t("settings.rateLimit.enabled")}</Label>
+              <p className="text-xs text-muted-foreground">
+                {t("settings.rateLimit.enabledDesc")}
+              </p>
+            </div>
+            <Switch
+              checked={s.rate_limit_enabled}
+              onCheckedChange={(value) => onChange("rate_limit_enabled", value)}
+            />
+          </div>
+          <div className="flex items-center justify-between">
+            <div>
+              <Label>{t("settings.rateLimit.perIp")}</Label>
+              <p className="text-xs text-muted-foreground">
+                {t("settings.rateLimit.perIpDesc")}
+              </p>
+            </div>
+            <Input
+              type="number"
+              min={1}
+              max={100000}
+              className="w-32"
+              value={editRateIp}
+              onFocus={() => {
+                rateIpEditing.current = true;
+              }}
+              onChange={(event) =>
+                setEditRateIp(Math.max(1, parseInt(event.target.value) || 1))
+              }
+              onBlur={() => {
+                rateIpEditing.current = false;
+                onChange("rate_limit_rpm_per_ip", editRateIp);
+              }}
+            />
+          </div>
+          <div className="flex items-center justify-between">
+            <div>
+              <Label>{t("settings.rateLimit.perKey")}</Label>
+              <p className="text-xs text-muted-foreground">
+                {t("settings.rateLimit.perKeyDesc")}
+              </p>
+            </div>
+            <Input
+              type="number"
+              min={1}
+              max={100000}
+              className="w-32"
+              value={editRateKey}
+              onFocus={() => {
+                rateKeyEditing.current = true;
+              }}
+              onChange={(event) =>
+                setEditRateKey(Math.max(1, parseInt(event.target.value) || 1))
+              }
+              onBlur={() => {
+                rateKeyEditing.current = false;
+                onChange("rate_limit_rpm_per_key", editRateKey);
+              }}
+            />
+          </div>
+          <div className="flex items-center justify-between">
+            <div>
+              <Label>{t("settings.rateLimit.perModel")}</Label>
+              <p className="text-xs text-muted-foreground">
+                {t("settings.rateLimit.perModelDesc")}
+              </p>
+            </div>
+            <Input
+              type="number"
+              min={1}
+              max={100000}
+              className="w-32"
+              value={editRateModel}
+              onFocus={() => {
+                rateModelEditing.current = true;
+              }}
+              onChange={(event) =>
+                setEditRateModel(Math.max(1, parseInt(event.target.value) || 1))
+              }
+              onBlur={() => {
+                rateModelEditing.current = false;
+                onChange("rate_limit_rpm_per_model", editRateModel);
+              }}
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">
+            {t("settings.cors.title")}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <Label>{t("settings.cors.allowedOrigins")}</Label>
+              <p className="text-xs text-muted-foreground">
+                {t("settings.cors.allowedOriginsDesc")}
+              </p>
+            </div>
+            <Input
+              value={editCorsOrigins}
+              onFocus={() => {
+                corsOriginsEditing.current = true;
+              }}
+              onChange={(event) => setEditCorsOrigins(event.target.value)}
+              onBlur={() => {
+                corsOriginsEditing.current = false;
+                onChange("cors_allowed_origins", editCorsOrigins);
+              }}
+              placeholder="https://example.com,https://app.example.com"
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">
+            {t("settings.tls.title")}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <Label>{t("settings.tls.enabled")}</Label>
+              <p className="text-xs text-muted-foreground">
+                {t("settings.tls.enabledDesc")}
+              </p>
+            </div>
+            <Switch
+              checked={s.tls_enabled}
+              onCheckedChange={(value) => onChange("tls_enabled", value)}
+            />
+          </div>
+          <div className="flex items-center justify-between">
+            <div>
+              <Label>{t("settings.tls.certPath")}</Label>
+              <p className="text-xs text-muted-foreground">
+                {t("settings.tls.certPathDesc")}
+              </p>
+            </div>
+            <Input
+              value={editTlsCert}
+              onFocus={() => {
+                tlsCertEditing.current = true;
+              }}
+              onChange={(event) => setEditTlsCert(event.target.value)}
+              onBlur={() => {
+                tlsCertEditing.current = false;
+                onChange("tls_cert_path", editTlsCert);
+              }}
+              placeholder="/path/to/cert.pem"
+            />
+          </div>
+          <div className="flex items-center justify-between">
+            <div>
+              <Label>{t("settings.tls.keyPath")}</Label>
+              <p className="text-xs text-muted-foreground">
+                {t("settings.tls.keyPathDesc")}
+              </p>
+            </div>
+            <Input
+              value={editTlsKey}
+              onFocus={() => {
+                tlsKeyEditing.current = true;
+              }}
+              onChange={(event) => setEditTlsKey(event.target.value)}
+              onBlur={() => {
+                tlsKeyEditing.current = false;
+                onChange("tls_key_path", editTlsKey);
+              }}
+              placeholder="/path/to/key.pem"
+            />
           </div>
         </CardContent>
       </Card>

@@ -18,21 +18,21 @@ use super::{join_url, ProtocolAdapter};
 /// - https://ai.google.dev/api/models
 use serde_json::{json, Value};
 
-/// Gemini 原生格式扩展字段白名单（用于 native Gemini 转换函数的穿透）
+/// Native Gemini format extension field whitelist
 const GEMINI_NATIVE_EXTENSION_FIELDS: &[&str] =
     &["x_future_gemini_field", "safetySettings", "cachedContent"];
 
-// ─── 黑名单常量 + 构建器：见下方 GEMINI_FOREIGN_DROP ──────────────
+// --- Blacklist constants + builders: see GEMINI_FOREIGN_DROP below ---
 
-// ─── 黑名单常量 + 构建器 ───────────────────────────────────────
+// --- Blacklist constants + builders ----------------------------------
 
-/// Gemini（OpenAI-compatible endpoint）出口要剔除的字段。
+/// Fields to drop for Gemini (OpenAI-compatible endpoint) egress.
 ///
-/// 黑名单决策（见 docs/protocol-passthrough-fix-plan.md §3.4）：保留未知/未来
-/// 字段，仅丢弃 (a) Gemini 兼容端点明确不支持的 OpenAI 字段，(b) 外来协议
-/// （Anthropic / OpenAI Responses）专有字段。参考：https://ai.google.dev/gemini-api/docs/openai
+/// Blacklist decision: preserve unknown/future
+/// fields, dropping only (a) OpenAI fields unsupported by Gemini compatible endpoints, (b) foreign protocol
+/// proprietary fields (Anthropic / OpenAI Responses). Ref: https://ai.google.dev/gemini-api/docs/openai
 const GEMINI_FOREIGN_DROP: &[&str] = &[
-    // Gemini 兼容端点不支持的 OpenAI 字段
+    // OpenAI fields not supported by Gemini compatible endpoint
     "logit_bias",
     "service_tier",
     "store",
@@ -42,7 +42,7 @@ const GEMINI_FOREIGN_DROP: &[&str] = &[
     "modalities",
     "audio",
     "prediction",
-    // OpenAI Responses API 专有
+    // OpenAI Responses API proprietary
     "input",
     "instructions",
     "include",
@@ -52,7 +52,7 @@ const GEMINI_FOREIGN_DROP: &[&str] = &[
     "truncation",
     "previous_response_id",
     "max_tool_calls",
-    // Anthropic 专有
+    // Anthropic proprietary
     "anthropic_version",
     "anthropic_beta",
     "betas",
@@ -63,13 +63,13 @@ const GEMINI_FOREIGN_DROP: &[&str] = &[
     "context_management",
     "mcp_servers",
     "container",
-    // 内部暂存字段
+    // Internal scratch fields
     "__as_raw_claude_req",
     "__as_raw_responses_req",
     "__as_raw_gemini_req",
 ];
 
-/// Gemini 响应方向要剔除的外来协议专有字段
+/// Foreign protocol proprietary fields to drop for Gemini response egress
 const GEMINI_RESPONSE_FOREIGN_DROP: &[&str] = &[
     "output",
     "output_text",
@@ -84,7 +84,7 @@ const GEMINI_RESPONSE_FOREIGN_DROP: &[&str] = &[
     "__as_raw_gemini_req",
 ];
 
-/// 从中间协议构建 Gemini 请求输出对象（黑名单：保留全部，仅剔除外来/不支持字段）
+/// Build Gemini request output object from intermediate protocol (blacklist: preserve all, drop foreign/unsupported fields)
 fn build_gemini_request_output(src: &serde_json::Map<String, Value>, actual_model: &str) -> Value {
     let mut out = src.clone();
     for key in GEMINI_FOREIGN_DROP {
@@ -94,7 +94,7 @@ fn build_gemini_request_output(src: &serde_json::Map<String, Value>, actual_mode
     Value::Object(out)
 }
 
-/// 从中间协议构建 Gemini 响应输出对象（黑名单：保留全部，仅剔除外来字段）
+/// Build Gemini response output object from intermediate protocol (blacklist: preserve all, drop foreign fields)
 fn build_gemini_response_output(src: &serde_json::Map<String, Value>) -> Value {
     let mut out = src.clone();
     for key in GEMINI_RESPONSE_FOREIGN_DROP {
@@ -137,7 +137,7 @@ impl ProtocolAdapter for GeminiAdapter {
     }
 
     fn transform_request(&self, body: &mut Value, actual_model: &str) {
-        // 白名单构建：只保留 Gemini 标准字段 + 扩展字段
+        // Whitelist build: preserve Gemini standard fields + extension fields
         let Some(src) = body.as_object() else {
             return;
         };
@@ -145,7 +145,7 @@ impl ProtocolAdapter for GeminiAdapter {
     }
 
     fn transform_response(&self, body: &mut Value) {
-        // 白名单构建：只保留 Gemini 标准字段 + 扩展字段
+        // Whitelist build: preserve Gemini standard fields + extension fields
         let Some(src) = body.as_object() else {
             return;
         };
@@ -762,7 +762,7 @@ pub fn gemini_to_openai_request(gemini: &Value) -> Value {
         }
     }
 
-    // 白名单穿透：只保留显式声明的 Gemini 扩展字段
+    // Whitelist passthrough: only preserve explicitly declared Gemini extension fields
     if let (Some(src), Some(dst)) = (gemini.as_object(), openai.as_object_mut()) {
         for key in GEMINI_NATIVE_EXTENSION_FIELDS {
             if let Some(value) = src.get(*key) {
@@ -825,11 +825,11 @@ pub fn openai_to_gemini_response(openai: &Value) -> Value {
         .and_then(Value::as_i64)
         .unwrap_or(0);
 
-    // 公理二：clone openai 作为基底，edit-in-place 改写 Gemini 特有字段，
-    // 避免白名单 json!({...}) 构造新对象把上游其他字段丢掉。
+    // Axiom 2: clone openai as base, edit-in-place rewriting Gemini-specific fields,
+    // avoiding whitelist json!({...}) dropping other upstream fields.
     let mut out = openai.clone();
     if let Some(obj) = out.as_object_mut() {
-        // 新增 Gemini 特有字段
+        // Add Gemini-specific fields
         obj.insert(
             "candidates".to_string(),
             json!([
@@ -851,7 +851,7 @@ pub fn openai_to_gemini_response(openai: &Value) -> Value {
             }),
         );
 
-        // 白名单构建：只保留 Gemini 响应标准字段 + 扩展字段
+        // Whitelist build: preserve Gemini response standard fields + extension fields
         let gemini_allowed: std::collections::HashSet<&str> = [
             "candidates",
             "usageMetadata",
@@ -868,17 +868,17 @@ pub fn openai_to_gemini_response(openai: &Value) -> Value {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  OpenAI SSE → Gemini SSE 流式转换
+// OpenAI SSE -> Gemini SSE streaming conversion
 // ═══════════════════════════════════════════════════════════════════
 //
-// 当 /v1beta/models/{model}:streamGenerateContent 接收到 Gemini 原生流式请求后，
-// 内部转换为 OpenAI 格式转发，上游返回 OpenAI SSE (chat.completion.chunk)，
-// 需要在此处逐行转换为 Gemini 原生 SSE 格式再返回给客户端。
+// When /v1beta/models/{model}:streamGenerateContent receives a native Gemini streaming request,
+// it converts to OpenAI format for forwarding; upstream returns OpenAI SSE (chat.completion.chunk),
+// which must be converted line-by-line into native Gemini SSE format before returning to client.
 //
-// OpenAI 格式:
+// OpenAI format:
 //   data: {"id":"...","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
 //
-// Gemini 格式:
+// Gemini format:
 //   data: {"candidates":[{"content":{"parts":[{"text":"Hello"}],"role":"model"},"finishReason":null}]}
 
 use axum::body::Body;
@@ -886,9 +886,9 @@ use bytes::Bytes;
 use futures::StreamExt;
 use std::time::Duration;
 
-/// 将单个 OpenAI SSE data line 转换为 Gemini 原生 SSE 格式。
+/// Convert a single OpenAI SSE data line into native Gemini SSE format.
 ///
-/// OpenAI chunk → Gemini chunk 字段映射：
+/// OpenAI chunk -> Gemini chunk field mapping:
 /// - choices[0].delta.content                → candidates[0].content.parts[0].text
 /// - choices[0].finish_reason (stop/length)   → candidates[0].finishReason (STOP/MAX_TOKENS)
 /// - usage.prompt_tokens                      → usageMetadata.promptTokenCount
@@ -944,7 +944,7 @@ fn openai_sse_chunk_to_gemini(data_line: &str) -> Option<String> {
         "candidates": [candidate]
     });
 
-    // 最后一个 chunk 可能携带 usage 信息
+    // Final chunk may carry usage info
     if let Some(usage) = value.get("usage") {
         let prompt = usage
             .get("prompt_tokens")
@@ -961,7 +961,7 @@ fn openai_sse_chunk_to_gemini(data_line: &str) -> Option<String> {
         });
     }
 
-    // 透传 model 字段
+    // Passthrough model field
     if let Some(model) = value.get("model").and_then(|m| m.as_str()) {
         gemini_chunk["model"] = json!(model);
     }
@@ -969,10 +969,10 @@ fn openai_sse_chunk_to_gemini(data_line: &str) -> Option<String> {
     Some(serde_json::to_string(&gemini_chunk).unwrap_or_default())
 }
 
-/// 将上游返回的 OpenAI SSE 流转换为 Gemini 原生 SSE 流。
+/// Convert OpenAI SSE stream returned by upstream into native Gemini SSE stream.
 ///
-/// 输入: OpenAI chat.completion.chunk SSE 流（来自 forwarder）
-/// 输出: Gemini candidates SSE 流（返回给 Gemini 原生客户端）
+/// Input: OpenAI chat.completion.chunk SSE stream (from forwarder)
+/// Output: Gemini candidates SSE stream (returned to native Gemini client)
 pub fn transform_openai_sse_to_gemini_stream(
     response: axum::response::Response,
 ) -> Result<axum::response::Response, crate::error::AppError> {
@@ -1225,7 +1225,7 @@ mod tests {
         assert_eq!(gemini["usageMetadata"]["totalTokenCount"], 2148);
     }
 
-    // ─── openai_sse_chunk_to_gemini 测试 ──────────────────────────
+    // --- openai_sse_chunk_to_gemini tests --------------------------
 
     #[test]
     fn openai_sse_chunk_basic_text() {
@@ -1348,8 +1348,8 @@ mod tests {
         assert!(gemini.get("max_tool_calls").is_none());
     }
 
-    /// 黑名单决策：GeminiAdapter（兼容端点 builder）应穿透未知/未来字段，
-    /// 仅剔除 Gemini 不支持的 OpenAI 字段与外来协议字段。
+    /// Blacklist decision: GeminiAdapter should passthrough unknown/future fields,
+    /// only dropping OpenAI fields unsupported by Gemini and foreign protocol fields.
     #[test]
     fn gemini_builder_passes_through_unknown_drops_unsupported() {
         let adapter = GeminiAdapter;
@@ -1367,12 +1367,12 @@ mod tests {
 
         assert_eq!(body["model"], "gemini-pro");
         assert_eq!(body["temperature"], 0.5);
-        // 未知字段穿透
+        // Unknown fields passthrough
         assert_eq!(body["x_future_gemini_field"]["nested"], "value");
-        // Gemini 不支持的 OpenAI 字段被剔除
+        // OpenAI fields unsupported by Gemini are dropped
         assert!(body.get("logit_bias").is_none());
         assert!(body.get("service_tier").is_none());
-        // 外来协议字段被剔除
+        // Foreign protocol fields are dropped
         assert!(body.get("anthropic_version").is_none());
     }
 
@@ -1420,7 +1420,7 @@ mod tests {
         let line = r#"{"id":"7"}"#;
         let result = openai_sse_chunk_to_gemini(line).unwrap();
         let v: Value = serde_json::from_str(&result).unwrap();
-        // 无 choices → content_text = ""，candidates 仍存在
+        // No choices -> content_text = "", candidates still exists
         assert_eq!(v["candidates"][0]["content"]["parts"][0]["text"], "");
         assert!(v.get("finishReason").is_none());
     }

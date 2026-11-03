@@ -1,17 +1,17 @@
 use serde::Serialize;
 
-/// 平台壳层类型
+/// Platform shell type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum RuntimeShell {
-    /// 桌面壳层（Windows/macOS/Linux GUI）
+    /// Desktop shell (Windows/macOS/Linux GUI)
     Desktop,
-    /// 移动壳层（Android/iOS）
+    /// Mobile shell (Android/iOS)
     Mobile,
-    /// 无壳层（headless / CLI 模式）
+    /// Headless shell (headless / CLI mode)
     None,
 }
 
-/// 运行时启动计划，显式声明各层是否启动
+/// Runtime startup plan, explicitly declaring whether each layer starts
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct RuntimePlan {
     pub start_core: bool,
@@ -21,7 +21,7 @@ pub struct RuntimePlan {
 }
 
 impl RuntimePlan {
-    /// 桌面壳层计划：启动全部基础运行层 + 桌面 GUI
+    /// Desktop shell plan: start all base runtime layers + desktop GUI
     pub fn desktop_shell() -> Self {
         Self {
             start_core: true,
@@ -31,7 +31,7 @@ impl RuntimePlan {
         }
     }
 
-    /// 移动壳层计划：启动全部基础运行层 + 移动 GUI
+    /// Mobile shell plan: start all base runtime layers + mobile GUI
     pub fn mobile_shell() -> Self {
         Self {
             start_core: true,
@@ -41,7 +41,7 @@ impl RuntimePlan {
         }
     }
 
-    /// 无壳层计划：启动全部基础运行层，无 GUI
+    /// Headless plan: start all base runtime layers, without GUI
     pub fn no_shell() -> Self {
         Self {
             start_core: true,

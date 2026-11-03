@@ -5,6 +5,7 @@ mod handlers;
 mod keyword_log;
 pub(crate) mod middleware;
 pub(crate) mod protocol;
+pub(crate) mod rate_limiter;
 mod responses_handler;
 mod router;
 mod server;

@@ -1,4 +1,4 @@
-# API Switch User Guide
+# Smart API Gateway User Guide
 
 ## Quick Start
 

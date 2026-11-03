@@ -84,23 +84,23 @@ pub async fn admin_index() -> impl IntoResponse {
         return StatusCode::NOT_FOUND.into_response();
     };
 
-    // 动态资源已在构建产出 (dist) 的 index.html 中直接使用哈希文件名，
-    // 因此无需在运行时进行占位符替换。若仍然需要确保入口资源存在，可在此处加入检查。
-    // 当前实现保持原始 HTML 内容，避免硬编码文件名。
-    // 如需在未来添加自定义资源注入，可在这里使用 `entry_assets()` 的结果。
-    // 如果后台在单端口模式下重新定位了 Admin 服务，会通过环境变量 ADMIN_BASE_URL 提供新的基路径。
+    // Dynamic assets already use hashed filenames directly in build output (dist) index.html,
+    // so there is no need for placeholder replacement at runtime. A check can be added here if ensuring entry assets exist is still needed.
+    // The current implementation preserves raw HTML content, avoiding hardcoded filenames.
+    // If custom asset injection is needed in the future, the result of `entry_assets()` can be used here.
+    // If the backend relocates the Admin service in single-port mode, the new base path will be provided via the ADMIN_BASE_URL environment variable.
     if let Ok(base_url) = std::env::var("ADMIN_BASE_URL") {
         html = html.replace("%ADMIN_BASE_URL%", &base_url);
     }
 
-    // 示例（已注释）：
+    // Example (commented out):
     // if let Some((js, css_list)) = entry_assets() {
-    //     // 可在此记录日志或执行其它业务逻辑
+    //     // Logs can be recorded or other business logic executed here
     // }
     //
-    // 直接返回读取的 HTML。
+    // Directly return the read HTML.
     //
-    // （保持原代码结构不变，仅去除硬编码替换）
+    // (Preserve original code structure, only removing hardcoded replacements)
 
     let mut response = Html(html).into_response();
     response
@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn embedded_web_admin_index_is_available() {
-        let html = read_embedded_text("index.html").expect("Web Admin index.html 应嵌入二进制");
+        let html = read_embedded_text("index.html").expect("Web Admin index.html should be embedded in binary");
         assert!(html.contains("<html") || html.contains("<!doctype html"));
     }
 }

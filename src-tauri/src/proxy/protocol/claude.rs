@@ -12,10 +12,10 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 use std::time::Duration;
 
-/// 穿透开关：true = 未知字段保留穿透，false = 只保留已知白名单字段
+/// Passthrough toggle: true = unknown fields preserved, false = whitelist only
 ///
-/// 默认 true，贯彻「中转翻译器不丢信息」的公理。
-/// 如果发现某个上游/客户端对未知字段返回 400，可临时改为 false 发布紧急版本。
+/// Defaults to true, following the axiom that proxy translators do not discard information.
+/// Can be set to false temporarily if an upstream rejects unknown fields with 400.
 const ENABLE_UNKNOWN_FIELD_PASSTHROUGH: bool = true;
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -282,16 +282,16 @@ fn transform_request_to_anthropic(body: &mut Value, actual_model: &str) {
         }
     }
 
-    // ─── 黑名单穿透：保留未知字段，仅丢弃已知 OpenAI 专有字段 ───────────
-    // 决策（见 docs/protocol-passthrough-fix-plan.md §3.4/§5.2）：跨协议出口由
-    // 硬白名单改为黑名单默认。白名单会误删目标协议新增的原生字段（如 Opus 4.8
-    // 的新字段），而上游通常忽略未知字段——"漏删"比"漏放"更易致故障。故保留
-    // 未知/未来字段穿透，仅剔除已知 OpenAI 专有字段（这些 Anthropic 不认）。
-    // 注意：model/messages/max_tokens/system/tools/stream/temperature/top_p/top_k/
+    // --- Blacklist passthrough: preserve unknown fields, drop only known OpenAI proprietary fields ---
+    // Decision: cross-protocol egress defaults to blacklist rather than whitelist.
+    // Whitelists inadvertently drop new valid native fields (e.g. newer model additions),
+    // while upstreams generally ignore unknown fields. Thus unknown/future
+    // fields passthrough, dropping only known OpenAI proprietary fields.
+    // Note: model/messages/max_tokens/system/tools/stream/temperature/top_p/top_k/
     // stop/tool_choice/thinking/reasoning_effort/parallel_tool_calls/user/
-    // max_completion_tokens 已在前面 remove 并映射，不在此处。
+    // max_completion_tokens have already been removed and mapped above.
     const OPENAI_SPECIFIC_DROP: &[&str] = &[
-        // OpenAI Chat Completions 专有
+        // OpenAI Chat Completions proprietary
         "frequency_penalty",
         "presence_penalty",
         "logit_bias",
@@ -309,7 +309,7 @@ fn transform_request_to_anthropic(body: &mut Value, actual_model: &str) {
         "audio",
         "service_tier",
         "reasoning",
-        // OpenAI Responses API 专有
+        // OpenAI Responses API proprietary
         "input",
         "instructions",
         "include",
@@ -323,14 +323,14 @@ fn transform_request_to_anthropic(body: &mut Value, actual_model: &str) {
         "prompt_cache_retention",
         "safety_identifier",
         "client_metadata",
-        // 内部字段
+        // Internal fields
         "provider_specific",
         "__as_raw_claude_req",
         "__as_raw_responses_req",
     ];
     if let Value::Object(ref mut anthropic_obj) = anthropic {
         for (key, value) in obj.iter() {
-            // 已显式映射的字段不覆盖；已知 OpenAI 专有字段丢弃；其余穿透。
+            // Explicitly mapped fields not overwritten; known OpenAI proprietary fields dropped; rest passthrough.
             if anthropic_obj.contains_key(key) || OPENAI_SPECIFIC_DROP.contains(&key.as_str()) {
                 continue;
             }
@@ -685,11 +685,11 @@ fn transform_response_from_anthropic(body: &mut Value) {
         });
     }
 
-    // 公理二：clone body 作为基底然后 edit-in-place，避免 json!({...}) 白名单构造
-    // 丢掉上游 Claude 响应里的其他字段（container、stop_sequence、官方新增字段等）。
+    // Axiom 2: clone body as base then edit-in-place, avoiding whitelist json!({...})
+    // dropping other fields from upstream Claude response (container, stop_sequence, etc.).
     let mut response_body = body.clone();
     if let Some(out) = response_body.as_object_mut() {
-        // 改写/设置 OpenAI 特有字段
+        // Rewrite/set OpenAI specific fields
         out.insert(
             "id".to_string(),
             obj.get("id")
@@ -702,14 +702,14 @@ fn transform_response_from_anthropic(body: &mut Value) {
         out.insert("choices".to_string(), json!([choice]));
         out.insert("usage".to_string(), usage_json);
 
-        // 移除 Claude 特有但 OpenAI chat.completion 不应出现的顶层字段
-        out.remove("type"); // Claude 顶层 "type": "message"，OpenAI 用 "object"
-        out.remove("role"); // OpenAI 把 role 塞在 choices[0].message.role
-        out.remove("stop_reason"); // OpenAI 用 choices[0].finish_reason
-        out.remove("stop_sequence"); // 同上
-        out.remove("content"); // OpenAI 没有顶层 content 数组，全在 choices 里
+        // Remove Claude-specific top-level fields not present in OpenAI chat.completion
+        out.remove("type"); // Claude top-level "type": "message", OpenAI uses "object"
+        out.remove("role"); // OpenAI places role in choices[0].message.role
+        out.remove("stop_reason"); // OpenAI uses choices[0].finish_reason
+        out.remove("stop_sequence"); // same as above
+        out.remove("content"); // OpenAI has no top-level content array, all in choices
 
-        // 如果关了穿透，只保留 OpenAI 官方 chat.completion 已知字段
+        // If passthrough disabled, only preserve OpenAI official chat.completion known fields
         if !ENABLE_UNKNOWN_FIELD_PASSTHROUGH {
             let openai_known: std::collections::HashSet<&str> = [
                 "id",
@@ -726,7 +726,7 @@ fn transform_response_from_anthropic(body: &mut Value) {
             .collect();
             out.retain(|k, _| openai_known.contains(k.as_str()));
         }
-        // 否则（默认）其他字段（container、x_anthropic_future_field 等）自然保留
+        // Otherwise (default) other fields (container, x_anthropic_future_field, etc.) naturally preserved
     }
 
     // Include thinking content if present
@@ -1053,7 +1053,7 @@ fn transform_anthropic_sse_line(data_line: &str) -> Option<String> {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  Public API: Claude <-> OpenAI format conversion (下游方向)
+// Public API: Claude <-> OpenAI format conversion (downstream)
 // ═══════════════════════════════════════════════════════════════════
 
 /// Convert Claude request format to OpenAI format.
@@ -1172,12 +1172,12 @@ pub fn claude_to_openai_request(claude: &Value) -> Value {
         }
     }
 
-    // 公理二：未知字段穿透。上面手动处理了所有已知字段，
-    // 这里把 claude 顶层剩余的（未知/未来的）字段也带过去，避免"中转翻译器"丢信息。
+    // Axiom 2: unknown fields passthrough. All known fields handled above,
+    // carrying remaining unknown/future fields to avoid dropping information.
     //
-    // 规则：入口（A→OpenAI 中间协议）不做过滤，不能转换的一律穿透；
-    // 非本协议字段的过滤抛弃在【出口】（中间→目标协议 B）进行，
-    // 见各协议 transform_request 的 *_FOREIGN_DROP 黑名单。
+    // Rule: ingress does no filtering; unconvertible fields passthrough to intermediate protocol;
+    // non-protocol fields are dropped at egress (intermediate -> target protocol),
+    // see *_FOREIGN_DROP blacklists in each protocol's transform_request.
     if ENABLE_UNKNOWN_FIELD_PASSTHROUGH {
         if let (Some(src), Some(dst)) = (claude.as_object(), openai.as_object_mut()) {
             for (key, value) in src {
@@ -1315,37 +1315,37 @@ pub fn openai_to_claude_response(openai: &Value) -> Value {
         usage_json["cache_read_input_tokens"] = json!(cache_read);
     }
 
-    // 公理二：clone openai 作为基底，然后 edit-in-place 改写 Claude 特有字段。
-    // 避免白名单 json!({...}) 构造新对象把上游其他字段（已知但非白名单/未来新增）丢掉。
+    // Axiom 2: clone openai as base, then edit-in-place rewrite Claude-specific fields.
+    // Avoid whitelist json!({...}) dropping other upstream fields (known non-whitelist/future additions).
     let mut out = openai.clone();
     if let Some(obj) = out.as_object_mut() {
-        // 改写/设置 Claude 特有字段
+        // Rewrite/set Claude-specific fields
         obj.insert("id".to_string(), json!(claude_id));
         obj.insert("type".to_string(), json!("message"));
         obj.insert("role".to_string(), json!("assistant"));
-        // model 字段 OpenAI 和 Claude 共用，用 openai 里的即可；但仍显式写一份保证值正确
+        // model field is shared by OpenAI and Claude; write explicitly to ensure value
         obj.insert("model".to_string(), json!(model));
         obj.insert("content".to_string(), json!(content));
         obj.insert("stop_reason".to_string(), json!(stop_reason));
         obj.insert("usage".to_string(), usage_json);
 
-        // 移除 OpenAI / Gemini / Responses 特有但 Claude 不应出现的字段
-        obj.remove("object"); // "chat.completion" 不是 Claude 语义
-        obj.remove("choices"); // Claude 没有 choices 结构
-        obj.remove("created"); // Claude 用 id 而不是时间戳
-        obj.remove("system_fingerprint"); // OpenAI 特有
-        obj.remove("candidates"); // Gemini 特有
-        obj.remove("usageMetadata"); // Gemini 特有
-        obj.remove("output"); // Responses 特有
-        obj.remove("output_text"); // Responses 特有
-        obj.remove("incomplete_details"); // Responses 特有
-        obj.remove("instructions"); // Responses 特有
-        obj.remove("parallel_tool_calls"); // OpenAI request/response 混入字段
-        obj.remove("previous_response_id"); // Responses 特有
-        obj.remove("text"); // Responses 特有
-        obj.remove("truncation"); // Responses 特有
+        // Remove OpenAI / Gemini / Responses specific fields not present in Claude
+        obj.remove("object"); // "chat.completion" is not Claude semantic
+        obj.remove("choices"); // Claude has no choices structure
+        obj.remove("created"); // Claude uses id rather than timestamp
+        obj.remove("system_fingerprint"); // OpenAI specific
+        obj.remove("candidates"); // Gemini specific
+        obj.remove("usageMetadata"); // Gemini specific
+        obj.remove("output"); // Responses specific
+        obj.remove("output_text"); // Responses specific
+        obj.remove("incomplete_details"); // Responses specific
+        obj.remove("instructions"); // Responses specific
+        obj.remove("parallel_tool_calls"); // OpenAI request/response field
+        obj.remove("previous_response_id"); // Responses specific
+        obj.remove("text"); // Responses specific
+        obj.remove("truncation"); // Responses specific
 
-        // 如果关了穿透，只保留 Claude 官方文档已知字段
+        // If passthrough disabled, only preserve Claude official known fields
         if !ENABLE_UNKNOWN_FIELD_PASSTHROUGH {
             let claude_known: std::collections::HashSet<&str> = [
                 "id",
@@ -1362,7 +1362,7 @@ pub fn openai_to_claude_response(openai: &Value) -> Value {
             .collect();
             obj.retain(|k, _| claude_known.contains(k.as_str()));
         }
-        // 否则（默认）保留所有其他字段作为 passthrough
+        // Otherwise (default) preserve all other fields as passthrough
     }
     out
 }
@@ -1390,7 +1390,7 @@ pub fn transform_claude_error(status: u16, message: &str) -> Value {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  ClaudeSSETransformer: OpenAI SSE -> Claude SSE (下游方向)
+// ClaudeSSETransformer: OpenAI SSE -> Claude SSE (downstream)
 // ═══════════════════════════════════════════════════════════════════
 
 /// Transforms OpenAI streaming SSE chunks into Claude SSE format.
@@ -1408,11 +1408,11 @@ pub struct ClaudeSSETransformer {
     tool_use_count: i64,
     usage_input_tokens: i64,
     usage_output_tokens: i64,
-    /// 是否已经 emit 过 message_delta（用于 P1 修复：
-    /// 当 OpenAI 先发 finish_reason 帧、再发 usage-only 帧时，
-    /// 需要在 usage 真正到达后补发一次 message_delta，
-    /// 否则 Claude 客户端看到的 output_tokens 永远是 0。
-    /// Claude 协议允许 message_delta 多次出现。）
+    /// Whether message_delta has already been emitted (for P1 fix:
+    /// When OpenAI emits finish_reason frame first then usage-only frame,
+    /// re-emit message_delta after usage arrives,
+    /// otherwise Claude client sees output_tokens as 0.
+    /// Claude protocol allows message_delta to appear multiple times.)
     message_delta_emitted: bool,
     delay_finish_until_done: bool,
     pending_finish_reason: Option<String>,
@@ -1555,7 +1555,7 @@ impl ClaudeSSETransformer {
         // Capture usage from the chunk if present (OpenAI stream_options.include_usage).
         //
         // NOTE: this block must run BEFORE the `choices=[]` early return below,
-        // otherwise the standalone usage-only frame (帧 4 in the typical
+        // otherwise the standalone usage-only frame (frame 4 in the typical
         // OpenAI sequence: role / content / finish / usage-only / [DONE])
         // would be dropped and `self.usage_output_tokens` would stay at 0,
         // making every Claude `message_delta` report `output_tokens: 0` (P1 bug).
@@ -1603,9 +1603,9 @@ impl ClaudeSSETransformer {
         }
 
         let Some(choice) = chunk.get("choices").and_then(|c| c.get(0)).cloned() else {
-            // usage-only 帧（choices=[]）。如果 message_delta 已经 emit 过
-            // 且 usage 已经更新，则补发一次 message_delta 让 Claude 客户端
-            // 拿到真实的 output_tokens（Claude 协议允许 message_delta 多次）。
+            // usage-only frame (choices=[]). If message_delta has already been emitted
+            // and usage is updated, re-emit message_delta to allow Claude client
+            // to receive real output_tokens (Claude protocol allows message_delta multiple times).
             if self.message_delta_emitted && self.usage_output_tokens > 0 {
                 events.push(
                     serde_json::to_string(&json!({
@@ -1883,9 +1883,9 @@ impl ClaudeSSETransformer {
 //  Private helpers for downstream conversion
 // ═══════════════════════════════════════════════════════════════════
 
-/// 把 OpenAI SSE 流转换成 Claude SSE 流。
+/// Convert OpenAI SSE stream into Claude SSE stream.
 ///
-/// 这属于 Claude 协议机的下游流式行为，不应留在 handler 中维护。
+/// Downstream streaming behavior of Claude protocol machine.
 pub fn transform_openai_sse_to_claude_stream(
     response: axum::response::Response,
     requested_model: String,
@@ -2452,7 +2452,7 @@ mod tests {
             "service_tier": "auto"
         });
         transform_request_to_anthropic(&mut body, "claude-3-sonnet-20240229");
-        // 输出边界：不属于 Claude 协议的字段必须被剔除
+        // Output boundary: fields not belonging to Claude protocol must be dropped
         assert!(body.get("frequency_penalty").is_none());
         assert!(body.get("presence_penalty").is_none());
         assert!(body.get("seed").is_none());
@@ -2997,9 +2997,9 @@ mod tests {
 
         let upstream = concat!(
             "data: {\"id\":\"chatcmpl-abc\",\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n",
-            "data: {\"id\":\"chatcmpl-abc\",\"choices\":[{\"delta\":{\"content\":\"现在是 12:58\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl-abc\",\"choices\":[{\"delta\":{\"content\":\"The time is 12:58\"},\"finish_reason\":null}]}\n\n",
             "data: {\"id\":\"chatcmpl-abc\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
-            "data: {\"id\":\"chatcmpl-api-switch-model-info\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\\n\\nmodel: gpt-5.5/I-linlong.xyz\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl-smart-api-gateway-model-info\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\\n\\nmodel: gpt-5.5/I-linlong.xyz\"},\"finish_reason\":null}]}\n\n",
             "data: [DONE]\n\n",
         );
         let response = axum::response::Response::builder()
@@ -3247,8 +3247,8 @@ mod tests {
         assert!(body.get("max_tool_calls").is_none());
     }
 
-    /// 规则验证：Claude→OpenAI【入口】不过滤，不能转换的字段一律穿透到中间态；
-    /// 非本协议字段的剔除在【出口】各协议 transform_request 完成。
+    /// Rule validation: Claude->OpenAI ingress does no filtering, unconvertible fields passthrough;
+    /// Non-protocol fields dropped at egress transform_request.
     #[test]
     fn claude_to_openai_passes_through_unconvertible_fields() {
         let claude = json!({
@@ -3263,8 +3263,8 @@ mod tests {
 
         let openai = claude_to_openai_request(&claude);
 
-        // 入口穿透：不能转换的 Claude 字段保留在中间态（由出口黑名单负责剔除）
-        assert!(openai.get("thinking").is_some(), "入口应穿透 thinking");
+        // Ingress passthrough: unconvertible Claude fields preserved in intermediate state
+        assert!(openai.get("thinking").is_some(), "Ingress should passthrough thinking");
         assert!(openai.get("context_management").is_some());
         assert!(openai.get("mcp_servers").is_some());
         assert_eq!(openai["x_future_field"], "keep_me");
@@ -3346,17 +3346,17 @@ mod tests {
         );
     }
 
-    // ─── 测试功能的 body 转换验证 ──────────────────────────────────────
-    // 三个 UI 测试功能（渠道编辑器测速 / 模型管理测速 / 对话测试）都构造一个
-    // OpenAI 形状的探测 body，再交给 adapter.transform_request 转成上游原生格式。
-    // 这些测试固化「转换后 body 是合法的 Anthropic 原生请求」这一行为契约：
-    //   - 单条 user 字符串 content 原样保留（Anthropic 接受裸字符串）；
-    //   - max_tokens 必须存在（Anthropic 必填）；
-    //   - 绝不以 stream:true 发往上游（流式探测在部分上游会挂起）；
-    //   - role:"system" 必须从 messages 提取到顶层 system 字段（混在 messages
-    //     里 Anthropic 原生端点会拒绝）——这是 transform 对对话测试的关键作用。
+    // --- Test functionality body transform verification -------------------
+    // UI test features construct an OpenAI-shaped probe body,
+    // then pass it to adapter.transform_request to convert to upstream native format.
+    // These tests verify that the converted body is a valid Anthropic request:
+    //   - Single user string content preserved as-is;
+    //   - max_tokens must be present (Anthropic required);
+    //   - Never send stream:true upstream for probes;
+    //   - role:"system" extracted from messages to top-level system field;
+    //     otherwise Anthropic native endpoint rejects it.
 
-    /// 渠道编辑器「模型测速」(channel_service.rs::test_channel_chat) 的 body。
+    /// Channel editor model test probe body.
     #[test]
     fn channel_editor_test_probe_becomes_native_claude() {
         let mut body = json!({
@@ -3369,16 +3369,16 @@ mod tests {
         assert_eq!(body["model"], "claude-opus-4-8");
         assert_eq!(body["max_tokens"], 10);
         assert_eq!(body["messages"][0]["role"], "user");
-        // 单条 user 字符串 content 原样保留（Anthropic 接受裸字符串）
+        // Single user string content preserved as-is
         assert_eq!(body["messages"][0]["content"], "just say OK");
-        // 关键：不能带 stream（上游对流式探测可能挂起）
-        assert!(body.get("stream").is_none(), "测速探测不应带 stream 字段");
-        // 不残留 OpenAI 专有字段
+        // Critical: cannot include stream (stream probe may hang on some upstreams)
+        assert!(body.get("stream").is_none(), "Latency probe should not include stream field");
+        // No lingering OpenAI proprietary fields
         assert!(body.get("temperature").is_none() || body["temperature"].is_number());
     }
 
-    /// 模型管理「测速」(pool_service.rs::test_entry_latency) 的 body。
-    /// 它显式带了 stream:false——验证转换后 stream 不为 true。
+    /// Pool management latency test probe body.
+    /// Explicitly includes stream:false - verify converted stream is not true.
     #[test]
     fn pool_latency_test_probe_becomes_native_claude() {
         let mut body = json!({
@@ -3390,15 +3390,15 @@ mod tests {
 
         assert_eq!(body["model"], "claude-opus-4-8");
         assert_eq!(body["messages"][0]["content"], "Say OK");
-        // stream:false 被透传，但绝不能是 true
-        assert_ne!(body["stream"], json!(true), "测速绝不能以流式发往上游");
-        // 未显式给 max_tokens 时，转换补默认值（Anthropic 必填）
-        assert!(body["max_tokens"].as_i64().unwrap_or(0) > 0, "Anthropic 要求 max_tokens 必填");
+        // stream:false is passed, but must never be true
+        assert_ne!(body["stream"], json!(true), "Probe must never be sent upstream as streaming");
+        // When max_tokens omitted, conversion supplies default (Anthropic required)
+        assert!(body["max_tokens"].as_i64().unwrap_or(0) > 0, "Anthropic requires max_tokens");
     }
 
-    /// 模型管理「对话测试」(test_chat.rs::test_chat) 的 body。
-    /// messages 来自用户输入，可能含 system + 多轮。这是 transform 真正不可省的
-    /// 场景：system 必须从 messages 提取到顶层，否则 Anthropic 原生端点拒绝。
+    /// Pool management chat test body.
+    /// messages come from user input, may contain system + multi-turn.
+    /// system must be extracted to top-level, otherwise Anthropic native endpoint rejects.
     #[test]
     fn test_chat_probe_with_system_becomes_native_claude() {
         let mut body = json!({
@@ -3411,20 +3411,20 @@ mod tests {
         });
         transform_request_to_anthropic(&mut body, "claude-opus-4-8");
 
-        // system 消息被提取到顶层 system 字段，不再混在 messages 里
-        assert!(body["system"].is_array(), "system 应提取为顶层 content blocks");
+        // system message extracted to top-level system field
+        assert!(body["system"].is_array(), "system should be extracted as top-level content blocks");
         assert_eq!(body["system"][0]["text"], "You are helpful.");
-        let msgs = body["messages"].as_array().expect("messages 数组");
-        assert_eq!(msgs.len(), 1, "system 已移出 messages，应只剩 user");
+        let msgs = body["messages"].as_array().expect("messages array");
+        assert_eq!(msgs.len(), 1, "system removed from messages, user remaining");
         assert_eq!(msgs[0]["role"], "user");
         assert_ne!(body["stream"], json!(true));
         assert!(body["max_tokens"].as_i64().unwrap_or(0) > 0);
     }
 
-    /// 行为基线：对单条 user 的最小探测 body，transform 仅做字段层面的规范化
-    /// （重命名/补默认/剔除 OpenAI 专有字段），不改写合法的字符串 content。
-    /// 固化这一点是为了说明：单纯的最小测速 body 即便不转换，对 Anthropic 也基本
-    /// 合法——真正必须 transform 的是带 system / tools / OpenAI 专有字段的场景。
+    /// Baseline: for minimal single user probe body, transform normalizes fields
+    /// without rewriting valid string content.
+    /// Clarifies that minimal probe body is mostly valid for Anthropic,
+    /// and transform is essential when system / tools / OpenAI proprietary fields are present.
     #[test]
     fn minimal_user_probe_transform_is_field_level_only() {
         let raw = json!({
@@ -3436,10 +3436,10 @@ mod tests {
         let mut transformed = raw.clone();
         transform_request_to_anthropic(&mut transformed, "claude-opus-4-8");
 
-        // content 仍是裸字符串（未被改写）
+        // content remains raw string (unrewritten)
         assert_eq!(transformed["messages"][0]["content"], "just say OK");
         assert_eq!(transformed["max_tokens"], 10);
-        // temperature 是 Anthropic 合法字段，被透传保留
+        // temperature is valid Anthropic field, preserved
         assert_eq!(transformed["temperature"], json!(0.0));
     }
 }

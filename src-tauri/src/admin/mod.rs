@@ -120,7 +120,30 @@ impl AdminServer {
 }
 
 pub fn should_start_admin(settings: &AppSettings) -> bool {
-    settings.web_admin_enabled
+    if !settings.web_admin_enabled {
+        return false;
+    }
+
+    // Safe-by-default: refuse to boot the admin server while credentials are
+    // missing or still set to the legacy hardcoded admin/admin default.
+    let username = settings.web_admin_username.trim();
+    let password = settings.web_admin_password.trim();
+    if username.is_empty() || password.is_empty() {
+        log::warn!(
+            "Web Admin disabled: admin credentials are not configured. \
+             Set a username and password in Settings, or use \
+             API_SWITCH_ADMIN_USER / API_SWITCH_ADMIN_PASS."
+        );
+        return false;
+    }
+    if username.eq_ignore_ascii_case("admin") && password == "admin" {
+        log::warn!(
+            "Web Admin disabled: default credentials (admin/admin) are still active. \
+             Set a new password in Settings first."
+        );
+        return false;
+    }
+    true
 }
 
 pub fn admin_mode(settings: &AppSettings) -> AdminMode {

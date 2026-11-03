@@ -23,17 +23,17 @@ fn has_custom_api_path(base_url: &str) -> bool {
     false
 }
 
-// ─── 黑名单常量 + 构建器：见下方 OPENAI_FOREIGN_DROP ──────────────
+// --- Blacklist constants + builders: see OPENAI_FOREIGN_DROP below ---
 
-/// 已知的"外来协议专有"字段——这些字段 OpenAI Chat Completions 不认，
-/// 且明确属于 Anthropic / Gemini native / OpenAI Responses，必须在出口剔除，
-/// 避免泄漏到 OpenAI 上游。
+/// Known foreign protocol proprietary fields that OpenAI Chat Completions does not accept,
+/// belonging to Anthropic / Gemini native / OpenAI Responses, which must be dropped on egress,
+/// avoiding leakage to OpenAI upstream.
 ///
-/// 黑名单决策（见 docs/protocol-passthrough-fix-plan.md §3.4）：出口由白名单
-/// 改黑名单——保留未知/未来字段（上游多忽略未知字段），仅丢弃已知外来字段
-/// （白名单会误删目标协议新增的合法字段，"漏删"比"漏放"更易致故障）。
+/// Blacklist decision: egress uses blacklist rather than whitelist -
+/// preserving unknown/future fields while dropping known foreign fields
+/// (whitelists inadvertently drop new valid protocol fields).
 const OPENAI_FOREIGN_DROP: &[&str] = &[
-    // OpenAI Responses API 专有
+    // OpenAI Responses API proprietary
     "input",
     "instructions",
     "include",
@@ -43,7 +43,7 @@ const OPENAI_FOREIGN_DROP: &[&str] = &[
     "truncation",
     "previous_response_id",
     "max_tool_calls",
-    // Anthropic 专有
+    // Anthropic proprietary
     "anthropic_version",
     "anthropic_beta",
     "betas",
@@ -54,21 +54,21 @@ const OPENAI_FOREIGN_DROP: &[&str] = &[
     "context_management",
     "mcp_servers",
     "container",
-    // Gemini native 专有
+    // Gemini native proprietary
     "contents",
     "generationConfig",
     "safetySettings",
     "systemInstruction",
     "cachedContent",
-    // 内部暂存字段
+    // Internal scratch fields
     "__as_raw_claude_req",
     "__as_raw_responses_req",
     "__as_raw_gemini_req",
 ];
 
-// ─── 黑名单构建器函数 ───────────────────────────────────────────
+// --- Blacklist builder functions -------------------------------------
 
-/// 从中间协议构建 OpenAI 请求输出对象（黑名单：保留全部，仅剔除外来字段）
+/// Build OpenAI request output object from intermediate protocol (blacklist: preserve all, drop foreign fields)
 fn build_openai_request_output(src: &serde_json::Map<String, Value>, actual_model: &str) -> Value {
     let mut out = src.clone();
     for key in OPENAI_FOREIGN_DROP {
@@ -78,7 +78,7 @@ fn build_openai_request_output(src: &serde_json::Map<String, Value>, actual_mode
     Value::Object(out)
 }
 
-/// 从中间协议构建 OpenAI 响应输出对象（黑名单：保留全部，仅剔除外来字段）
+/// Build OpenAI response output object from intermediate protocol (blacklist: preserve all, drop foreign fields)
 fn build_openai_response_output(src: &serde_json::Map<String, Value>) -> Value {
     let mut out = src.clone();
     for key in OPENAI_RESPONSE_FOREIGN_DROP {
@@ -87,21 +87,21 @@ fn build_openai_response_output(src: &serde_json::Map<String, Value>) -> Value {
     Value::Object(out)
 }
 
-/// 响应方向的外来协议专有字段（Gemini/Responses/Anthropic 响应结构）
+/// Foreign protocol proprietary fields in response direction (Gemini/Responses/Anthropic response structures)
 const OPENAI_RESPONSE_FOREIGN_DROP: &[&str] = &[
-    // OpenAI Responses API 响应专有
+    // OpenAI Responses API response proprietary
     "output",
     "output_text",
     "instructions",
-    // Gemini native 响应专有
+    // Gemini native response proprietary
     "candidates",
     "usageMetadata",
     "promptFeedback",
     "modelVersion",
-    // Anthropic 响应专有
+    // Anthropic response proprietary
     "stop_reason",
     "stop_sequence",
-    // 内部暂存字段
+    // Internal scratch fields
     "__as_raw_claude_req",
     "__as_raw_responses_req",
     "__as_raw_gemini_req",
@@ -143,7 +143,7 @@ impl ProtocolAdapter for OpenAiAdapter {
     }
 
     fn transform_request(&self, body: &mut Value, actual_model: &str) {
-        // 白名单构建：只保留 OpenAI 标准字段 + 扩展字段，其余丢弃
+        // Whitelist build: preserve OpenAI standard fields + extension fields, discard rest
         let Some(src) = body.as_object() else {
             return;
         };
@@ -151,7 +151,7 @@ impl ProtocolAdapter for OpenAiAdapter {
     }
 
     fn transform_response(&self, body: &mut Value) {
-        // 白名单构建：只保留 OpenAI 标准字段 + 扩展字段，其余丢弃
+        // Whitelist build: preserve OpenAI standard fields + extension fields, discard rest
         let Some(src) = body.as_object() else {
             return;
         };
@@ -227,8 +227,8 @@ mod tests {
 
         assert_eq!(body["model"], "resolved-model");
         assert_eq!(body["reasoning_effort"], "high");
-        // 规则：顶层 thinking 是 Anthropic 原名，非 OpenAI 标准/扩展/语义对应字段，
-        // 出口应抛弃（保留的是 reasoning_effort/reasoning_content/provider_specific）。
+        // Rule: top-level thinking is Anthropic name, not OpenAI standard/extension field,
+        // egress should drop it (preserving reasoning_effort/reasoning_content/provider_specific).
         assert!(body.get("thinking").is_none());
         assert_eq!(body["messages"][0]["reasoning_content"], "kept reasoning");
         assert_eq!(
@@ -279,17 +279,17 @@ mod tests {
 
         assert_eq!(body["messages"][0]["role"], "user");
         assert_eq!(body["temperature"], 0.3);
-        // metadata 是标准字段，中转层应保留
+        // metadata is standard field and should be preserved
         assert_eq!(body["metadata"]["k"], "v");
         assert_eq!(body["store"], true);
         assert_eq!(body["prompt_cache_key"], "cache-key");
         assert_eq!(body["safety_identifier"], "safe-user");
         assert_eq!(body["reasoning_effort"], "medium");
-        // 顶层 thinking（Anthropic 原名）出口抛弃；reasoning_effort 保留
+        // Top-level thinking (Anthropic name) dropped on egress; reasoning_effort preserved
         assert!(body.get("thinking").is_none());
     }
 
-    /// 黑名单决策：未知/未来字段必须穿透（不再被白名单误删）。
+    /// Blacklist decision: unknown/future fields must passthrough.
     #[test]
     fn transform_request_passes_through_unknown_fields() {
         let adapter = OpenAiAdapter;

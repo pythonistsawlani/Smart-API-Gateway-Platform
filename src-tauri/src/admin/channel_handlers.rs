@@ -14,7 +14,7 @@ use crate::services::channel_service::{
 use axum::extract::{Json, Path, Query, State};
 use serde::{Deserialize, Deserializer};
 
-// Types for request bodies 鈥?reuse the same definitions as in the Tauri commands
+// Types for request bodies - reuse the same definitions as in the Tauri commands
 #[derive(Deserialize)]
 pub struct CreateChannelParams {
     pub name: String,

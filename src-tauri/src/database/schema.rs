@@ -161,7 +161,7 @@ pub fn create_tables(conn: &Connection) -> Result<(), AppError> {
     let defaults = [
         ("proxy_enabled", "1"),
         ("listen_port", "9090"),
-        ("access_key_required", "0"),
+        ("access_key_required", "1"),
         ("circuit_failure_threshold", "5"),
         ("proxy_connect_timeout_secs", "30"),
         ("circuit_recovery_secs", "300"),
@@ -169,7 +169,7 @@ pub fn create_tables(conn: &Connection) -> Result<(), AppError> {
         ("circuit_retry_codes", "100-199,300-399,401-407,409-499,500-503,505-523,525-599"),
         ("disable_keywords", "Your credit balance is too low\nThis organization has been disabled.\nYou exceeded your current quota\nPermission denied\nThe security token included in the request is invalid\nOperation not allowed\nYour account is not authorized\ninsufficient_quota\nquota_exceeded_error\ntoken plan limit exhausted\nUpstream rate limit exceeded\ninvalid api key\nUnauthorized - Invalid token"),
         ("keyword_freeze_scope", "model"),
-        ("locale", "zh"),
+        ("locale", "en"),
         ("theme", "light"),
         ("show_guide", "1"),
         ("autostart", "0"),
@@ -177,9 +177,16 @@ pub fn create_tables(conn: &Connection) -> Result<(), AppError> {
         ("default_sort_mode", "custom"),
         ("active_group", "auto"),
         ("web_admin_enabled", "1"),
-("web_admin_username", "admin"),
-("web_admin_password", "admin"),
         ("web_admin_port", "9090"),
+        ("bind_external", "0"),
+        ("rate_limit_enabled", "1"),
+        ("rate_limit_rpm_per_ip", "120"),
+        ("rate_limit_rpm_per_key", "240"),
+        ("rate_limit_rpm_per_model", "600"),
+        ("cors_allowed_origins", ""),
+        ("tls_enabled", "0"),
+        ("tls_cert_path", ""),
+        ("tls_key_path", ""),
         ("show_conversation_model", "0"),
         ("disable_reasoning", "1"),
         ("record_raw_protocol_data", "0"),
@@ -224,7 +231,7 @@ fn ensure_api_entry_columns(conn: &Connection) -> Result<(), AppError> {
     ensure_column(conn, "api_entries", "model_meta_zh", "TEXT DEFAULT ''")?;
     ensure_column(conn, "api_entries", "model_meta_en", "TEXT DEFAULT ''")?;
     ensure_column(conn, "api_entries", "score", "REAL DEFAULT 0")?;
-    // group_name 鍒嗙粍瀛楁
+    // group_name grouping field
     ensure_column(
         conn,
         "api_entries",
@@ -243,17 +250,17 @@ fn ensure_channel_columns(conn: &Connection) -> Result<(), AppError> {
     ensure_column(conn, "channels", "response_ms", "TEXT DEFAULT ''")?;
     ensure_column(conn, "channels", "upstream_headers", "TEXT")?;
 
-    // 旧数据迁移：将临时硬编码的 Header 落到渠道配置中
+    // Legacy data migration: persist temporary hardcoded headers into channel configuration
     let claude_headers = r#"{"user-agent":"claude-cli/2.1.176 (external, cli)","x-app":"cli","anthropic-beta":"claude-code-20250219"}"#;
     let codex_headers = r#"{"originator":"codex_cli_rs"}"#;
 
-    // api_type = 'anthropic' 的既有渠道写入 Claude CLI Header
+    // Existing channels with api_type = 'anthropic' write Claude CLI Header
     conn.execute(
         "UPDATE channels SET upstream_headers = ?1 WHERE (upstream_headers IS NULL OR TRIM(upstream_headers) = '') AND api_type = 'anthropic'",
         rusqlite::params![claude_headers],
     ).map_err(|e| AppError::Database(e.to_string()))?;
 
-    // api_type = 'responses' 且 base_url 包含 'codex' 的渠道写入 CODEX Header
+    // Channels with api_type = 'responses' and base_url containing 'codex' write CODEX Header
     conn.execute(
         "UPDATE channels SET upstream_headers = ?1 WHERE (upstream_headers IS NULL OR TRIM(upstream_headers) = '') AND api_type = 'responses' AND base_url LIKE '%codex%'",
         rusqlite::params![codex_headers],

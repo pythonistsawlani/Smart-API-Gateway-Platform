@@ -1,7 +1,7 @@
-//! Token facade：access key 的 CRUD 与状态切换。
+//! Token facade: access key CRUD and status toggling.
 //!
-//! 调用 `services::token_service` 中的函数，底层使用 `&Database`，
-//! 在所有构建模式下均可用。
+//! Invokes functions in `services::token_service`, using `&Database` underneath,
+//! available across all build modes.
 
 use crate::database::dao::PaginatedResult;
 use crate::database::AccessKey;
@@ -10,12 +10,12 @@ use crate::error::AppError;
 use super::ServerApi;
 
 impl ServerApi {
-    /// 获取所有 access key。
+    /// Get all access keys.
     pub fn list_access_keys(&self) -> Result<Vec<AccessKey>, AppError> {
         crate::services::token_service::list_access_keys(&self.state().db)
     }
 
-    /// 分页获取 access key。
+    /// Paginated retrieval of access keys.
     pub fn list_access_keys_paginated(
         &self,
         page: i32,
@@ -28,17 +28,17 @@ impl ServerApi {
         )
     }
 
-    /// 创建新 access key。
+    /// Create new access key.
     pub fn create_access_key(&self, name: &str) -> Result<AccessKey, AppError> {
         crate::services::token_service::create_access_key(&self.state().db, name)
     }
 
-    /// 删除指定 access key。
+    /// Delete specified access key.
     pub fn delete_access_key(&self, id: &str) -> Result<(), AppError> {
         crate::services::token_service::delete_access_key(&self.state().db, id, self.app.as_ref())
     }
 
-    /// 切换 access key 的启用状态。
+    /// Toggle enabled status of access key.
     pub fn toggle_access_key(&self, id: &str, enabled: bool) -> Result<(), AppError> {
         crate::services::token_service::toggle_access_key(
             &self.state().db,

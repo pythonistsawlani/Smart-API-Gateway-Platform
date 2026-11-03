@@ -44,12 +44,12 @@ fn extract_text_from_content_block(block: &Value) -> String {
 }
 
 fn extract_content_from_message(message: &Value) -> String {
-    // 先尝试直接取字符串 content
+    // First try directly taking string content
     if let Some(text) = non_empty_message_field(message, "content") {
         return text.to_string();
     }
 
-    // content 可能是数组（content blocks）
+    // content may be an array (content blocks)
     if let Some(arr) = message.get("content").and_then(Value::as_array) {
         let texts: Vec<String> = arr
             .iter()
@@ -67,7 +67,7 @@ fn extract_content_from_message(message: &Value) -> String {
         }
     }
 
-    // fallback: 尝试序列化 content 为字符串
+    // fallback: try serializing content to string
     if let Some(content) = message.get("content") {
         if !content.is_null() {
             if let Some(s) = content.as_str() {
@@ -75,7 +75,7 @@ fn extract_content_from_message(message: &Value) -> String {
                     return s.to_string();
                 }
             } else {
-                // 不是字符串（可能是数组），尝试 JSON 序列化作为兜底展示
+                // Not a string (may be an array), try JSON serialization as fallback display
                 if let Ok(s) = serde_json::to_string(content) {
                     if s != "null" {
                         return s;
@@ -85,7 +85,7 @@ fn extract_content_from_message(message: &Value) -> String {
         }
     }
 
-    // fallback: reasoning 字段
+    // fallback: reasoning field
     non_empty_message_field(message, "reasoning_content")
         .or_else(|| non_empty_message_field(message, "reasoning_text"))
         .or_else(|| non_empty_message_field(message, "reasoning_details"))
@@ -198,7 +198,7 @@ pub async fn test_chat(
         .apply_auth(client.post(&url), primary_api_key(&channel.api_key))
         .json(&upstream_body);
 
-    // 使用渠道配置的 upstream_headers 替代硬编码头部注入
+    // Use channel-configured upstream_headers instead of hardcoded header injection
     request = crate::services::upstream_headers::apply_upstream_headers(
         request,
         channel.upstream_headers.as_deref(),
@@ -360,7 +360,7 @@ pub async fn test_chat(
     let mut json_body = json_body;
     adapter.transform_response(&mut json_body);
 
-    // 提取内容；部分推理模型可能只返回 reasoning 字段，content 为空。
+    // Extract content; some reasoning models may only return reasoning field with empty content.
     let content = extract_test_chat_content(&json_body);
 
     if content.trim().is_empty() {
@@ -439,13 +439,13 @@ mod tests {
         let body = json!({
             "choices": [{
                 "message": {
-                    "content": "普通内容",
-                    "reasoning_content": "推理内容"
+                    "content": "Regular content",
+                    "reasoning_content": "Reasoning content"
                 }
             }]
         });
 
-        assert_eq!(extract_test_chat_content(&body), "普通内容");
+        assert_eq!(extract_test_chat_content(&body), "Regular content");
     }
 
     #[test]
@@ -454,12 +454,12 @@ mod tests {
             "choices": [{
                 "message": {
                     "content": "",
-                    "reasoning_content": "推理内容"
+                    "reasoning_content": "Reasoning content"
                 }
             }]
         });
 
-        assert_eq!(extract_test_chat_content(&body), "推理内容");
+        assert_eq!(extract_test_chat_content(&body), "Reasoning content");
     }
 
     #[test]
@@ -468,12 +468,12 @@ mod tests {
             "choices": [{
                 "message": {
                     "content": "   ",
-                    "reasoning_text": "兼容推理内容"
+                    "reasoning_text": "Compatible reasoning content"
                 }
             }]
         });
 
-        assert_eq!(extract_test_chat_content(&body), "兼容推理内容");
+        assert_eq!(extract_test_chat_content(&body), "Compatible reasoning content");
     }
 
     #[test]
@@ -482,15 +482,15 @@ mod tests {
             "model": "qwen/qwen3.5-122b-a10b",
             "thinking": true,
             "reasoning": { "effort": "high" },
-            "reasoning_content": "推理内容",
-            "reasoning_text": "兼容推理内容",
-            "reasoning_details": "推理详情",
+            "reasoning_content": "Reasoning content",
+            "reasoning_text": "Compatible reasoning content",
+            "reasoning_details": "Reasoning details",
             "reasoning_effort": "high"
         });
 
         apply_disable_reasoning_for_test_chat(&mut body);
 
-        let obj = body.as_object().expect("请求体必须是对象");
+        let obj = body.as_object().expect("Request body must be an object");
         assert!(!obj.contains_key("thinking"));
         assert!(!obj.contains_key("reasoning"));
         assert!(!obj.contains_key("reasoning_content"));

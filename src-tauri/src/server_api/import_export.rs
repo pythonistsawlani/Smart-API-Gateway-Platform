@@ -1,4 +1,4 @@
-//! Import/export facade：渠道和模型池迁移包的导入导出。
+//! Import/export facade: import and export migration packages for channels and model pools.
 
 use crate::error::AppError;
 use crate::services::import_export_service::{
@@ -9,14 +9,14 @@ use crate::services::import_export_service::{
 use super::ServerApi;
 
 impl ServerApi {
-    /// 导出 channel/model transfer JSON。
+    /// Export channel/model transfer JSON.
     pub fn export_channel_model_transfer(&self) -> Result<String, AppError> {
         let channels = self.state().db.list_channels()?;
         let entries = self.state().db.list_entries()?;
         build_transfer_json(&channels, &entries)
     }
 
-    /// 预览 channel/model transfer 导入影响。
+    /// Preview channel/model transfer import impact.
     pub fn preview_channel_model_transfer(&self, payload: &str) -> Result<ImportPreview, AppError> {
         let transfer = validate_transfer_payload(payload)?;
         let current_channels = self.state().db.list_channels()?.len();
@@ -28,7 +28,7 @@ impl ServerApi {
         ))
     }
 
-    /// 导入 channel/model transfer，并统一维护版本与壳层事件。
+    /// Import channel/model transfer, consistently maintaining versions and shell events.
     pub fn import_channel_model_transfer(&self, payload: &str) -> Result<ImportResult, AppError> {
         let transfer = validate_transfer_payload(payload)?;
         let (channel_count, model_count) = self
@@ -43,7 +43,7 @@ impl ServerApi {
 
         Ok(ImportResult {
             success: true,
-            message: format!("导入成功，已重建 {channel_count} 个渠道和 {model_count} 个模型。"),
+            message: format!("Import successful; reconstructed {channel_count} channels and {model_count} models."),
             channel_count,
             model_count,
         })

@@ -1,7 +1,7 @@
-//! Channel facade：channel CRUD、模型获取、连接测试等。
+//! Channel facade: channel CRUD, model fetching, connection testing, etc.
 //!
-//! 调用 `services::channel_service` 中的函数，底层使用 `&Database` 和
-//! `Option<&AppEventHandle>`，在所有构建模式下均可用。
+//! Invokes functions in `services::channel_service`, using `&Database` and
+//! `Option<&AppEventHandle>` underneath, available across all build modes.
 
 use crate::database::dao::PaginatedResult;
 use crate::database::{Channel, ModelCatalogMetaInput, ModelInfo};
@@ -14,12 +14,12 @@ use crate::services::channel_service::{
 use super::ServerApi;
 
 impl ServerApi {
-    /// 获取所有 channel 列表。
+    /// Get all channels list.
     pub fn list_channels(&self) -> Result<Vec<Channel>, AppError> {
         channel_service::list_channels(&self.state().db)
     }
 
-    /// 获取指定 channel 的模型列表。
+    /// Get model list for the specified channel.
     pub async fn fetch_channel_models(
         &self,
         channel_id: String,
@@ -27,7 +27,7 @@ impl ServerApi {
         channel_service::fetch_models(&self.state().db, channel_id).await
     }
 
-    /// 分页获取 channel 列表。
+    /// Paginated retrieval of channel list.
     pub fn list_channels_paginated(
         &self,
         page: i32,
@@ -36,19 +36,19 @@ impl ServerApi {
         channel_service::list_channels_paginated(&self.state().db, page, page_size)
     }
 
-    /// 创建新 channel。
+    /// Create new channel.
     pub fn create_channel(&self, params: CreateChannelParams) -> Result<Channel, AppError> {
         let channel = channel_service::create_channel(&self.state().db, params)?;
         self.emit_event("channels-changed");
         Ok(channel)
     }
 
-    /// 更新 channel，同时触发前端事件。
+    /// Update channel, also triggering frontend events.
     pub fn update_channel(&self, params: UpdateChannelParams) -> Result<Channel, AppError> {
         channel_service::update_channel(&self.state().db, self.app.as_ref(), params)
     }
 
-    /// 删除 channel，同时触发前端事件。
+    /// Delete channel, also triggering frontend events.
     pub fn delete_channel(&self, id: String) -> Result<(), AppError> {
         let result = channel_service::delete_channel(&self.state().db, self.app.as_ref(), id);
         if result.is_ok() {
@@ -57,7 +57,7 @@ impl ServerApi {
         result
     }
 
-    /// 更新 channel 的响应时间。
+    /// Update channel response latency in ms.
     pub fn update_channel_response_ms(
         &self,
         channel_id: &str,
@@ -76,7 +76,7 @@ impl ServerApi {
         result
     }
 
-    /// 同步 channel 的已选模型，并维护由模型派生的 pool entry。
+    /// Sync selected models for channel and maintain model-derived pool entries.
     pub fn select_channel_models(
         &self,
         channel_id: &str,
@@ -99,7 +99,7 @@ impl ServerApi {
         Ok(())
     }
 
-    /// 测试指定 channel，并按测试结果更新启用状态/响应时间。
+    /// Test specified channel and update enabled status/response latency according to test result.
     pub async fn test_channel(&self, channel_id: &str) -> Result<TestChannelResult, AppError> {
         let channel = self.state().db.get_channel(channel_id)?;
 
@@ -147,7 +147,7 @@ impl ServerApi {
         Ok(result)
     }
 
-    /// 一步保存 channel 并同步模型，同时触发前端事件。
+    /// One-step save channel and sync models, while triggering frontend events.
     pub fn save_channel_with_models(
         &self,
         params: SaveChannelWithModelsParams,

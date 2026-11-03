@@ -42,18 +42,39 @@ export const API_TYPES = [
   { value: 'anthropic', label: 'Anthropic/Claude' },
   { value: 'gemini', label: 'Google-Gemini' },
   { value: 'azure', label: 'Microsoft-Azure' },
-  
+  { value: 'other', label: 'Other (Exact URL)' },
 ] as const;
+
+/** Map backend stored api_type values to UI dropdown values */
+const BACKEND_TO_UI_API_TYPE: Record<string, string> = {
+  custom: 'openai',   // legacy 'custom' stored value → OpenAI-compatible dropdown
+  claude: 'anthropic', // backend stores 'claude', UI shows 'anthropic'
+  openai: 'openai',
+  responses: 'responses',
+  gemini: 'gemini',
+  azure: 'azure',
+  other: 'other',
+  anthropic: 'anthropic',
+};
+
+/** Map UI dropdown values back to backend api_type values to send on save */
+export const UI_TO_BACKEND_API_TYPE: Record<string, string> = {
+  openai: 'openai',
+  anthropic: 'claude',  // UI shows 'anthropic', backend expects 'claude'
+  gemini: 'gemini',
+  azure: 'azure',
+  responses: 'responses',
+  other: 'other',
+};
 
 export function channelToForm(channel: Channel): ChannelFormState {
   return {
     id: channel.id,
     name: channel.name,
-    
     base_url: channel.base_url,
     api_key: channel.api_key,
     notes: channel.notes ?? '',
-    api_type: channel.api_type === 'custom' ? 'openai' : (channel.api_type === 'claude' ? 'anthropic' : channel.api_type),
+    api_type: BACKEND_TO_UI_API_TYPE[channel.api_type] ?? channel.api_type,
     enabled: channel.enabled,
     upstream_headers: channel.upstream_headers ?? '',
   };

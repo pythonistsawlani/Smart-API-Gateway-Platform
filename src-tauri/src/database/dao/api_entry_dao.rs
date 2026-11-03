@@ -466,7 +466,7 @@ impl Database {
         Ok(())
     }
 
-    /// 冷冻同一渠道下的所有模型条目；只写 cooldown_until，不修改用户启用开关。
+    /// Freeze all model entries under the same channel; only writes cooldown_until without modifying user enabled switches.
     pub fn freeze_entries_for_channel(
         &self,
         channel_id: &str,

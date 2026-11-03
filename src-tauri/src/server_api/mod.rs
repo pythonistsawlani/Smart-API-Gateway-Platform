@@ -1,8 +1,8 @@
-//! SERVER API facade：对核心状态变更的平台无关入口。
+//! SERVER API facade: platform-agnostic entry points for core state mutations.
 //!
-//! `ServerApi` 持有 `AppState` 和 `AppEventHandle`，封装 proxy / config / channel /
-//! pool / token 五个子 facade，使得非 Tauri-command 的调用方（如 admin HTTP handler、
-//! 未来 mobile bridge、headless CLI）能以统一接口操作核心业务。
+//! `ServerApi` holds `AppState` and `AppEventHandle`, encapsulating proxy / config / channel /
+//! pool / token facades so non-Tauri callers (e.g. admin HTTP handler,
+//! future mobile bridge, headless CLI) can operate on core business logic with a unified interface.
 
 pub mod channel;
 pub mod config;
@@ -13,13 +13,13 @@ pub mod token;
 
 use crate::AppState;
 
-/// 平台无关的业务操作入口。
+/// Platform-agnostic business operations facade.
 ///
-/// 在 GUI 模式下 `AppEventHandle = tauri::AppHandle`，
-/// 在 headless 模式下 `AppEventHandle = ()`（零大小结构体，事件发送为空操作）。
+/// In GUI mode `AppEventHandle = tauri::AppHandle`,
+/// in headless mode `AppEventHandle = ()` (zero-sized struct, event emissions are no-ops).
 ///
-/// 调用方（admin handler / future mobile bridge）通过 `ServerApi` 触发核心状态变更，
-/// 而非直接依赖 `tauri::State` 或 `#[tauri::command]`。
+/// Callers trigger core mutations via `ServerApi`
+/// rather than directly depending on `tauri::State` or `#[tauri::command]`.
 #[derive(Clone)]
 pub struct ServerApi {
     state: AppState,
@@ -27,20 +27,20 @@ pub struct ServerApi {
 }
 
 impl ServerApi {
-    /// 创建新的 `ServerApi` 实例。
+    /// Create a new `ServerApi` instance.
     ///
-    /// - `state`: 共享应用状态
-    /// - `app`: 事件句柄（GUI 模式下为 `tauri::AppHandle`，headless 下可 None）
+    /// - `state`: shared application state
+    /// - `app`: event handle (`tauri::AppHandle` in GUI mode, None in headless mode)
     pub fn new(state: AppState, app: Option<crate::AppEventHandle>) -> Self {
         Self { state, app }
     }
 
-    /// 获取内部 `AppState` 的引用。
+    /// Get reference to internal `AppState`.
     pub fn state(&self) -> &AppState {
         &self.state
     }
 
-    /// 安全发送前端事件；无句柄时静默跳过（headless 兼容）。
+    /// Safely emit frontend event; silently skipped when no handle is present (headless compatible).
     pub(crate) fn emit_event(&self, event: &str) {
         if let Some(handle) = &self.app {
             crate::event::emit(handle, event);

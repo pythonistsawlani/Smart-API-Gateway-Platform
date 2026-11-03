@@ -1,13 +1,13 @@
-//! OpenAI Responses API 上游适配器（Beta）
+//! OpenAI Responses API upstream adapter (Beta)
 //!
-//! 作为 channel.api_type = "responses" 时的 adapter，把 chat.completions
-//! 中间格式翻译成 Responses API 请求发给上游，再把 Responses API 响应
-//! 翻译回 chat.completions 格式供内部消费。
+//! Adapter for channel.api_type = "responses", translating chat.completions
+//! intermediate format into Responses API requests sent upstream, and translating Responses API responses
+//! back to chat.completions format for internal consumption.
 //!
-//! 参考官方文档：
+//! Reference official documentation:
 //! https://platform.openai.com/docs/api-reference/responses
 //!
-//! 公理：这边进来什么，那边出去一样。已知字段按文档翻译，未知字段穿透。
+//! Axiom: input semantics match output semantics. Known fields translate per doc, unknown fields passthrough.
 
 use super::{join_url, ProtocolAdapter};
 use axum::body::Body;
@@ -29,9 +29,9 @@ pub fn responses_sse_done() -> bytes::Bytes {
     bytes::Bytes::from("data: [DONE]\n\n")
 }
 
-// ─── Responses SSE → Chat SSE 辅助函数（上游方向） ───────────────
+// --- Responses SSE -> Chat SSE helper functions (upstream direction) ---
 
-/// 把 Responses `response.output_text.delta` 转为 Chat SSE 文本增量。
+/// Convert Responses `response.output_text.delta` to Chat SSE text delta.
 fn chat_sse_text_delta(delta: &str) -> String {
     serde_json::to_string(&json!({
         "choices": [{"index": 0, "delta": {"content": delta}}]
@@ -39,7 +39,7 @@ fn chat_sse_text_delta(delta: &str) -> String {
     .unwrap_or_default()
 }
 
-/// 把 Responses `response.output_item.added` (function_call) 转为 Chat SSE 工具调用开始。
+/// Convert Responses `response.output_item.added` (function_call) to Chat SSE tool call start.
 fn chat_sse_tool_call_begin(
     output_index: u64,
     call_id: &str,
@@ -61,7 +61,7 @@ fn chat_sse_tool_call_begin(
     .unwrap_or_default()
 }
 
-/// 把 Responses `response.function_call_arguments.delta` 转为 Chat SSE 工具参数增量。
+/// Convert Responses `response.function_call_arguments.delta` to Chat SSE tool argument delta.
 fn chat_sse_tool_call_args(output_index: u64, delta: &str) -> String {
     serde_json::to_string(&json!({
         "choices": [{"index": 0, "delta": {
@@ -76,7 +76,7 @@ fn chat_sse_tool_call_args(output_index: u64, delta: &str) -> String {
     .unwrap_or_default()
 }
 
-/// 把 Responses `response.completed` 转为 Chat SSE 结束信号（finish_reason + usage）。
+/// Convert Responses `response.completed` to Chat SSE completion signal (finish_reason + usage).
 fn chat_sse_completed(finish_reason: &str, input_tokens: i64, output_tokens: i64) -> String {
     serde_json::to_string(&json!({
         "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
@@ -89,7 +89,7 @@ fn chat_sse_completed(finish_reason: &str, input_tokens: i64, output_tokens: i64
     .unwrap_or_default()
 }
 
-/// 把 Responses 失败事件转为 Chat/OpenAI 客户端能识别的错误包络。
+/// Convert Responses failure event to error envelope recognizable by Chat/OpenAI clients.
 fn chat_sse_error(error: Option<&Value>) -> String {
     let message = error
         .and_then(|e| e.get("message"))
@@ -516,14 +516,14 @@ pub fn responses_to_openai_chat_request(req_body: &Value) -> (Value, bool, Strin
         "stream": is_stream,
     });
 
-    // Reasoning: Responses API 的 reasoning 对象 → Chat API 的扁平字段
+    // Reasoning: Responses API reasoning object -> Chat API flat fields
     if let Some(reasoning) = req_body.get("reasoning").and_then(|v| v.as_object()) {
         if let Some(effort) = reasoning.get("effort").and_then(|v| v.as_str()) {
             chat_body["reasoning_effort"] = json!(effort);
         }
     }
 
-    // text.format → response_format（Responses→Chat 反向映射）
+    // text.format -> response_format (Responses -> Chat reverse mapping)
     if let Some(text_obj) = req_body.get("text").and_then(|v| v.as_object()) {
         if let Some(format) = text_obj.get("format") {
             if let Some(response_format) = chat_response_format_from_text_format(format) {
@@ -1340,10 +1340,10 @@ pub fn transform_openai_sse_to_responses_stream(
         })
 }
 
-/// Responses 请求方向标准字段白名单（基于官方文档）
-/// 参考：https://developers.openai.com/api/reference/resources/responses/methods/create
-/// 注意：model, input, instructions, tools, max_output_tokens, reasoning, response_format
-/// 已在 transform_request_to_responses 中手动处理
+/// Responses request standard field whitelist (based on official docs)
+/// Ref: https://developers.openai.com/api/reference/resources/responses/methods/create
+/// Note: model, input, instructions, tools, max_output_tokens, reasoning, response_format
+/// have already been handled in transform_request_to_responses
 const RESPONSES_REQUEST_STANDARD_FIELDS: &[&str] = &[
     "background",
     "conversation",
@@ -1369,14 +1369,14 @@ const RESPONSES_REQUEST_STANDARD_FIELDS: &[&str] = &[
     "user",
 ];
 
-/// Responses 请求方向扩展字段白名单
+/// Responses request extension field whitelist
 const RESPONSES_REQUEST_EXTENSION_FIELDS: &[&str] = &["x_responses_future_field"];
 
-/// Responses 响应方向标准字段白名单（基于官方文档）
-/// 参考：https://developers.openai.com/api/reference/resources/responses/
-/// 注意：id, object, created_at, model, output, usage, status, error,
-/// incomplete_details, metadata 已在 responses_completed_response 中手动构造
-/// 注意：max_output_tokens, max_tool_calls 仅是请求参数，不在响应中出现
+/// Responses response standard field whitelist (based on official docs)
+/// Ref: https://developers.openai.com/api/reference/resources/responses/
+/// Note: id, object, created_at, model, output, usage, status, error,
+/// incomplete_details, metadata have already been constructed in responses_completed_response
+/// Note: max_output_tokens, max_tool_calls are request params only, not appearing in response
 const RESPONSES_RESPONSE_STANDARD_FIELDS: &[&str] = &[
     "instructions",
     "parallel_tool_calls",
@@ -1397,7 +1397,7 @@ const RESPONSES_RESPONSE_STANDARD_FIELDS: &[&str] = &[
     "user",
 ];
 
-/// Responses 响应方向扩展字段白名单
+/// Responses response extension field whitelist
 const RESPONSES_RESPONSE_EXTENSION_FIELDS: &[&str] = &[
     "x_responses_future_field",
     "x_future_response_field",
@@ -1412,7 +1412,7 @@ impl ProtocolAdapter for ResponsesAdapter {
     }
 
     fn build_models_url(&self, base_url: &str, _api_key: &str) -> String {
-        // Responses API 复用 /v1/models 列表端点
+        // Responses API reuses /v1/models list endpoint
         join_url(base_url, "v1/models")
     }
 
@@ -1441,9 +1441,9 @@ impl ProtocolAdapter for ResponsesAdapter {
     }
 
     fn needs_sse_transform(&self) -> bool {
-        // 启用 SSE 转换：将上游 Responses 原生 SSE 事件翻译为 Chat Completions SSE，
-        // 使 forwarder 的成功判定和下游 handler 都能正确识别流输出。
-        // 详见 docs/REFACTOR_PLAN.md 第九节"补齐 SSE 翻译"。
+        // Enable SSE conversion: translate upstream Responses native SSE events to Chat Completions SSE,
+        // allowing forwarder success evaluation and downstream handler to recognize stream output.
+        // See docs/REFACTOR_PLAN.md section 9.
         true
     }
 
@@ -1454,7 +1454,7 @@ impl ProtocolAdapter for ResponsesAdapter {
         let Ok(value) = serde_json::from_str::<Value>(data_line) else {
             return (0, 0);
         };
-        // Responses SSE 的 usage 格式：response.completed 事件里带 usage.input_tokens/output_tokens
+        // Responses SSE usage format: response.completed event carries usage.input_tokens/output_tokens
         let prompt = value
             .pointer("/response/usage/input_tokens")
             .and_then(Value::as_i64)
@@ -1478,32 +1478,32 @@ impl ProtocolAdapter for ResponsesAdapter {
         (prompt, completion)
     }
 
-    /// 把 Responses 原生 SSE 事件行翻译为 Chat Completions SSE 格式。
+    /// Translate Responses native SSE event lines to Chat Completions SSE format.
     ///
-    /// 映射规则：
-    /// | Responses 事件 | Chat SSE 输出 | 说明 |
+    /// Mapping rules:
+    /// | Responses Event | Chat SSE Output | Description |
     /// |---|---:|---|
-    /// | `response.output_text.delta` | `choices[0].delta.content` | 文本增量 |
-    /// | `response.output_item.added` (function_call) | `choices[0].delta.tool_calls[N]` (含 id + name) | 工具调用开始 |
-    /// | `response.function_call_arguments.delta` | `choices[0].delta.tool_calls[N].function.arguments` | 工具参数增量 |
-    /// | `response.completed` | `choices[0].finish_reason` + `usage` | 流结束信号 |
-    /// | `response.created` / `.done` / 其他状态事件 | `None`（跳过） | 无 Chat 对应事件 |
+    /// | `response.output_text.delta` | `choices[0].delta.content` | Text delta |
+    /// | `response.output_item.added` (function_call) | `choices[0].delta.tool_calls[N]` (with id + name) | Tool call start |
+    /// | `response.function_call_arguments.delta` | `choices[0].delta.tool_calls[N].function.arguments` | Tool args delta |
+    /// | `response.completed` | `choices[0].finish_reason` + `usage` | Stream completion signal |
+    /// | `response.created` / `.done` / other status events | `None` (skip) | No Chat counterpart |
     fn transform_sse_line(&self, data_line: &str) -> Option<String> {
         let Ok(value) = serde_json::from_str::<Value>(data_line) else {
-            // 非 JSON 行（如注释行）原样透传
+            // Non-JSON lines (e.g. comment lines) passthrough as-is
             return Some(data_line.to_string());
         };
 
         let typ = match value.get("type").and_then(|v| v.as_str()) {
             Some(t) => t,
             None => {
-                // 无 type 字段的行（如 Chat SSE 用法事件）原样透传
+                // Lines without type field (e.g. Chat SSE usage events) passthrough as-is
                 return Some(data_line.to_string());
             }
         };
 
         match typ {
-            // ── 文本增量 ──────────────────────────────────────────────
+            // -- Text delta ----------------------------------------------
             "response.output_text.delta" => {
                 let delta = value.get("delta").and_then(|v| v.as_str()).unwrap_or("");
                 if delta.is_empty() {
@@ -1512,7 +1512,7 @@ impl ProtocolAdapter for ResponsesAdapter {
                 Some(chat_sse_text_delta(delta))
             }
 
-            // ── Reasoning 增量 ───────────────────────────────────────
+            // -- Reasoning delta -----------------------------------------
             "response.reasoning_text.delta" => {
                 let delta = value.get("delta").and_then(|v| v.as_str()).unwrap_or("");
                 if delta.is_empty() {
@@ -1521,12 +1521,12 @@ impl ProtocolAdapter for ResponsesAdapter {
                 Some(chat_sse_reasoning_delta(delta))
             }
 
-            // ── 工具调用开始（output_item.added + function_call） ────
+            // -- Tool call start (output_item.added + function_call) -----
             "response.output_item.added" => {
                 let item = value.get("item")?;
                 let item_type = item.get("type").and_then(|v| v.as_str())?;
                 if item_type != "function_call" {
-                    // 非 function 的 output item 没有 Chat SSE 对应事件
+                    // Non-function output item has no Chat SSE equivalent
                     return None;
                 }
                 let output_index = value
@@ -1548,7 +1548,7 @@ impl ProtocolAdapter for ResponsesAdapter {
                 ))
             }
 
-            // ── Reasoning item 完成（MIMO Responses 把 reasoning 放在 encrypted_content） ──
+            // -- Reasoning item complete (MIMO Responses places reasoning in encrypted_content) --
             "response.output_item.done" => {
                 let item = value.get("item")?;
                 if item.get("type").and_then(Value::as_str) == Some("reasoning") {
@@ -1558,7 +1558,7 @@ impl ProtocolAdapter for ResponsesAdapter {
                 None
             }
 
-            // ── 工具参数增量 ──────────────────────────────────────────
+            // -- Tool parameter delta ------------------------------------
             "response.function_call_arguments.delta" => {
                 let delta = value.get("delta").and_then(|v| v.as_str()).unwrap_or("");
                 if delta.is_empty() {
@@ -1571,7 +1571,7 @@ impl ProtocolAdapter for ResponsesAdapter {
                 Some(chat_sse_tool_call_args(output_index, delta))
             }
 
-            // ── 流完成 ──────────────────────────────────────────────
+            // -- Stream completed ----------------------------------------
             "response.completed" => {
                 let resp = value.get("response");
                 let status = resp
@@ -1600,25 +1600,25 @@ impl ProtocolAdapter for ResponsesAdapter {
                 ))
             }
 
-            // ── 失败事件 ────────────────────────────────────────────
+            // -- Failure event -------------------------------------------
             "response.failed" => Some(chat_sse_error(
                 value
                     .pointer("/response/error")
                     .or_else(|| value.get("error")),
             )),
 
-            // ── 无 Chat SSE 对应的 Responses 事件 ────────────────────
-            // Responses 生命周期/状态事件不能原样透传给 Chat 下游；否则下游
-            // 只接受 choices/error 包络的 OpenAI 客户端会把合法上游事件判成坏包。
+            // -- Responses events without Chat SSE equivalent ------------
+            // Responses lifecycle/status events must not leak as-isto downstream Chat; otherwise
+            // clients expecting choices/error envelopes will treat valid upstream events as malformed.
             event if event.starts_with("response.") => None,
 
-            // 非 Responses 的 JSON SSE（例如上游已经给出的 Chat 风格错误）保留。
+            // Preserve non-Responses JSON SSE (e.g. Chat style errors already emitted by upstream).
             _ => Some(data_line.to_string()),
         }
     }
 
     fn parse_models_response(&self, body: &Value) -> Vec<(String, Option<String>)> {
-        // OpenAI 标准 /v1/models 响应格式
+        // OpenAI standard /v1/models response format
         body.get("data")
             .and_then(|d| d.as_array())
             .map(|arr| {
@@ -1635,43 +1635,43 @@ impl ProtocolAdapter for ResponsesAdapter {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  chat.completions → Responses API 请求
+//  chat.completions -> Responses API request
 // ═══════════════════════════════════════════════════════════════════
 
-/// 把 chat.completions 格式的请求翻译成 Responses API 请求。
+/// Translate chat.completions format request into Responses API request.
 ///
-/// 核心映射（根据 OpenAI 官方文档）：
-/// - `model` → `model`（直接）
-/// - `messages[]` → `input[]`（事件流形式）
-///   - system/developer → 顶层 `instructions`（取第一条）
+/// Core mapping (according to official OpenAI docs):
+/// - `model` → `model`(direct)
+/// - `messages[]` → `input[]`(event stream format)
+///   - system/developer → top-level `instructions` (take first)
 ///   - user message → `input_text` item
 ///   - assistant message → `message` item（role=assistant）
 ///   - assistant tool_calls → `function_call` items
 ///   - tool message → `function_call_output` item
 /// - `max_tokens` → `max_output_tokens`
-/// - `stop` → Responses API 没直接对应，保留在 body（passthrough）
-/// - `stream` → 保留
-/// - `temperature`/`top_p` → 保留
-/// - `tools[]` → `tools[]`（function tools 解包 function 嵌套）
-/// - `tool_choice` → `tool_choice`（字符串或对象直接穿透）
-/// - `response_format` → `text.format`（官方对应关系）
-/// - 未知字段：ENABLE_UNKNOWN_FIELD_PASSTHROUGH=true 时全部保留
+/// - `stop` → Responses API no direct counterpart, preserved in body (passthrough)
+/// - `stream` → preserved
+/// - `temperature`/`top_p` → preserved
+/// - `tools[]` → `tools[]`(function tools unwrap function nesting)
+/// - `tool_choice` → `tool_choice`(string or object direct passthrough)
+/// - `response_format` → `text.format`(official correspondence)
+/// - Unknown fields: all preserved when ENABLE_UNKNOWN_FIELD_PASSTHROUGH=true
 fn transform_request_to_responses(body: &mut Value, actual_model: &str) {
     let Some(obj) = body.as_object_mut() else {
         return;
     };
 
-    // 已经是 Responses 原生请求时只更新实际模型名，保留 reasoning.summary、
-    // include: ["reasoning.encrypted_content"] 等 Responses 专属字段。
+    // When already a native Responses request, only update model name, preserving reasoning.summary,
+    // include: ["reasoning.encrypted_content"] and other Responses proprietary fields.
     if obj.contains_key("input") && !obj.contains_key("messages") {
         obj.insert("model".to_string(), json!(actual_model));
         return;
     }
 
-    // 1. 先收集和转换 messages → input
+    // 1. Collect and convert messages -> input
     let (instructions, input_items) = messages_to_input(obj.remove("messages"));
 
-    // 2. 构造 Responses 请求骨架
+    // 2. Construct Responses request skeleton
     let mut responses = serde_json::Map::new();
     responses.insert("model".to_string(), json!(actual_model));
     responses.insert("input".to_string(), json!(input_items));
@@ -1681,7 +1681,7 @@ fn transform_request_to_responses(body: &mut Value, actual_model: &str) {
         }
     }
 
-    // 3. 已知字段映射
+    // 3. Map known fields
     if let Some(max_tokens) = obj
         .remove("max_completion_tokens")
         .or_else(|| obj.remove("max_tokens"))
@@ -1689,19 +1689,19 @@ fn transform_request_to_responses(body: &mut Value, actual_model: &str) {
         responses.insert("max_output_tokens".to_string(), max_tokens);
     }
 
-    // tools：从 chat.completions 的 {type:"function", function:{name,...}}
-    // 转到 Responses 的 {type:"function", name, ...}（解包 function 嵌套）
+    // tools: from chat.completions {type:"function", function:{name,...}}
+    // to Responses {type:"function", name, ...} (unwrap function nesting)
     if let Some(tools) = obj.remove("tools") {
         responses.insert("tools".to_string(), convert_tools_to_responses(&tools));
     }
 
-    // response_format → text.format（官方文档中的对应关系）
+    // response_format -> text.format (per official docs)
     if let Some(rf) = obj.remove("response_format") {
         responses.insert("text".to_string(), json!({ "format": rf }));
     }
 
-    // reasoning_effort: Chat API 的扁平字段 → Responses 的 reasoning 对象。
-    // 如果请求已带 Responses 原生 reasoning，则只覆盖/补充 effort，保留 summary 等字段。
+    // reasoning_effort: Chat API flat field -> Responses reasoning object.
+    // If request has native reasoning, update effort while preserving summary etc.
     if let Some(effort) = obj.remove("reasoning_effort") {
         let mut reasoning = obj
             .remove("reasoning")
@@ -1712,19 +1712,19 @@ fn transform_request_to_responses(body: &mut Value, actual_model: &str) {
         }
         responses.insert("reasoning".to_string(), reasoning);
     } else if let Some(reasoning) = obj.remove("reasoning") {
-        // 保留原生 reasoning 字段（即使没有 reasoning_effort）
+        // Preserve native reasoning field (even without reasoning_effort)
         responses.insert("reasoning".to_string(), reasoning);
     }
 
-    // 4. 其他已知字段直接拷贝（Responses API 标准字段）
-    // 使用白名单方式，只拷贝 Responses 标准字段
+    // 4. Copy other known standard fields (Responses API standard fields)
+    // Copy Responses standard fields
     for field in RESPONSES_REQUEST_STANDARD_FIELDS {
         if let Some(val) = obj.remove(*field) {
             responses.insert((*field).to_string(), val);
         }
     }
 
-    // 5. 白名单穿透：只保留显式声明的 Responses 扩展字段
+    // 5. Whitelist passthrough: only preserve declared Responses extension fields
     for key in RESPONSES_REQUEST_EXTENSION_FIELDS {
         if let Some(value) = obj.get(*key) {
             if !responses.contains_key(*key) {
@@ -1736,14 +1736,14 @@ fn transform_request_to_responses(body: &mut Value, actual_model: &str) {
     *body = Value::Object(responses);
 }
 
-/// 把 chat.completions 的 messages[] 转成 Responses 的 (instructions, input[])。
+/// Convert chat.completions messages[] to Responses (instructions, input[]).
 ///
-/// 返回 (instructions, input_items)。
-/// - 第一个 system/developer 消息提升为 instructions（顶层参数）
-/// - 后续 system 消息作为 input item 保留
-/// - user 消息 → input_text item
-/// - assistant 消息 → message item（可能带 tool_calls）
-/// - tool 消息 → function_call_output item
+/// Returns (instructions, input_items).
+/// - First system/developer message promoted to instructions (top-level parameter)
+/// - Subsequent system messages preserved as input items
+/// - user message -> input_text item
+/// - assistant message -> message item (may carry tool_calls)
+/// - tool message -> function_call_output item
 fn messages_to_input(messages: Option<Value>) -> (Option<String>, Vec<Value>) {
     let Some(Value::Array(msgs)) = messages else {
         return (None, Vec::new());
@@ -1761,12 +1761,12 @@ fn messages_to_input(messages: Option<Value>) -> (Option<String>, Vec<Value>) {
 
         match role {
             "system" | "developer" => {
-                // 第一条 system 消息作为 instructions
+                // First system message becomes instructions
                 let text = extract_text_content(content);
                 if instructions.is_none() {
                     instructions = Some(text);
                 } else {
-                    // 后续 system 消息进 input
+                    // Subsequent system messages go into input
                     input_items.push(json!({
                         "type": "message",
                         "role": "system",
@@ -1783,7 +1783,7 @@ fn messages_to_input(messages: Option<Value>) -> (Option<String>, Vec<Value>) {
                 }));
             }
             "assistant" => {
-                // assistant 可能既有 content 也有 tool_calls
+                // assistant may have both content and tool_calls
                 let text = extract_text_content(content);
                 if !text.is_empty() {
                     input_items.push(json!({
@@ -1826,7 +1826,7 @@ fn messages_to_input(messages: Option<Value>) -> (Option<String>, Vec<Value>) {
                 }));
             }
             other => {
-                // 未知 role，穿透
+                // Unknown role, passthrough
                 input_items.push(json!({
                     "type": "message",
                     "role": other,
@@ -1857,8 +1857,8 @@ fn extract_text_content(content: Option<&Value>) -> String {
     }
 }
 
-/// 把 chat.completions user message 的 content 转成 Responses input content parts。
-/// 支持字符串和 content block array（含 image_url 等）。
+/// Convert chat.completions user message content to Responses input content parts.
+/// Supports strings and content block arrays (including image_url etc.).
 fn user_content_to_responses_parts(content: Option<&Value>) -> Vec<Value> {
     match content {
         Some(Value::String(s)) => vec![json!({ "type": "input_text", "text": s })],
@@ -1889,7 +1889,7 @@ fn user_content_to_responses_parts(content: Option<&Value>) -> Vec<Value> {
                                 "detail": detail,
                             })
                         }
-                        _ => p.clone(), // 未知类型穿透
+                        _ => p.clone(), // Unknown type passthrough
                     }
                 } else if let Some(s) = p.as_str() {
                     json!({ "type": "input_text", "text": s })
@@ -1906,7 +1906,7 @@ fn user_content_to_responses_parts(content: Option<&Value>) -> Vec<Value> {
     }
 }
 
-/// 把 chat.completions tools[] 转成 Responses tools[]。
+/// Convert chat.completions tools[] to Responses tools[].
 /// chat: `{type:"function", function:{name,...}}` → resp: `{type:"function", name,...}`
 fn convert_tools_to_responses(tools: &Value) -> Value {
     let Some(arr) = tools.as_array() else {
@@ -1920,7 +1920,7 @@ fn convert_tools_to_responses(tools: &Value) -> Value {
                 return tool.clone();
             };
             let typ = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            // function tool 需要解包 function 嵌套
+            // function tool needs to unwrap function nesting
             if typ == "function" {
                 if let Some(func) = obj.get("function").and_then(|v| v.as_object()) {
                     let mut new_tool = serde_json::Map::new();
@@ -1928,7 +1928,7 @@ fn convert_tools_to_responses(tools: &Value) -> Value {
                     for (k, v) in func.iter() {
                         new_tool.insert(k.clone(), v.clone());
                     }
-                    // 白名单穿透：只保留显式声明的 Responses 扩展字段
+                    // Whitelist passthrough: only preserve declared Responses extension fields
                     for key in RESPONSES_REQUEST_EXTENSION_FIELDS {
                         if let Some(v) = obj.get(*key) {
                             if !new_tool.contains_key(*key) {
@@ -1939,7 +1939,7 @@ fn convert_tools_to_responses(tools: &Value) -> Value {
                     return Value::Object(new_tool);
                 }
             }
-            // 非 function 工具：直接穿透
+            // Non-function tool: direct passthrough
             tool.clone()
         })
         .collect();
@@ -1948,24 +1948,24 @@ fn convert_tools_to_responses(tools: &Value) -> Value {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  Responses API 响应 → chat.completions 响应
+//  Responses API response -> chat.completions response
 // ═══════════════════════════════════════════════════════════════════
 
-/// 把 Responses API 响应翻译成 chat.completions 响应。
+/// Translate Responses API response into chat.completions response.
 ///
-/// 核心映射：
-/// - `output[]` 里的 message item → choices[0].message.content
-/// - `output[]` 里的 function_call item → choices[0].message.tool_calls
+/// Core mapping:
+/// - message item in `output[]` -> choices[0].message.content
+/// - function_call item in `output[]` -> choices[0].message.tool_calls
 /// - `usage.input_tokens` → `usage.prompt_tokens`
 /// - `usage.output_tokens` → `usage.completion_tokens`
-/// - `status` → finish_reason 映射
-/// - 未知字段穿透
+/// - `status` -> finish_reason mapping
+/// - Unknown fields passthrough
 fn transform_response_from_responses(body: &mut Value) {
     let Some(obj) = body.as_object_mut() else {
         return;
     };
 
-    // 取出 output 数组
+    // Extract output array
     let output = obj.remove("output");
     let mut content_text = String::new();
     let mut reasoning_text = String::new();
@@ -1980,7 +1980,7 @@ fn transform_response_from_responses(body: &mut Value) {
 
             match typ {
                 "message" => {
-                    // message.content[] 里的 output_text 拼接起来
+                    // Concatenate output_text in message.content[]
                     if let Some(parts) = item_obj.get("content").and_then(|v| v.as_array()) {
                         for part in parts {
                             let part_type = part.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -2022,7 +2022,7 @@ fn transform_response_from_responses(body: &mut Value) {
         }
     }
 
-    // 构造 message
+    // Construct message
     let mut message = serde_json::Map::new();
     message.insert("role".to_string(), json!("assistant"));
     message.insert("content".to_string(), json!(content_text));
@@ -2034,7 +2034,7 @@ fn transform_response_from_responses(body: &mut Value) {
         message.insert("tool_calls".to_string(), json!(tool_calls));
     }
 
-    // finish_reason 映射
+    // finish_reason mapping
     let finish_reason = match obj.get("status").and_then(|v| v.as_str()) {
         Some("completed") => {
             if !tool_calls.is_empty() {
@@ -2044,7 +2044,7 @@ fn transform_response_from_responses(body: &mut Value) {
             }
         }
         Some("incomplete") => {
-            // 看 incomplete_details.reason
+            // Inspect incomplete_details.reason
             obj.get("incomplete_details")
                 .and_then(|d| d.get("reason"))
                 .and_then(|v| v.as_str())
@@ -2060,7 +2060,7 @@ fn transform_response_from_responses(body: &mut Value) {
         "finish_reason": finish_reason,
     });
 
-    // usage 映射
+    // usage mapping
     let usage_src = obj.remove("usage").unwrap_or(json!({}));
     let prompt_tokens = usage_src
         .get("input_tokens")
@@ -2079,7 +2079,7 @@ fn transform_response_from_responses(body: &mut Value) {
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
     });
-    // cached_tokens / reasoning_tokens 保留
+    // cached_tokens / reasoning_tokens preserved
     if let Some(cached) = usage_src
         .get("input_tokens_details")
         .and_then(|d| d.get("cached_tokens"))
@@ -2099,7 +2099,7 @@ fn transform_response_from_responses(body: &mut Value) {
         }
     }
 
-    // 构造 chat.completions 响应骨架
+    // Construct chat.completions response skeleton
     let mut chat_response = serde_json::Map::new();
     if let Some(id) = obj.remove("id") {
         chat_response.insert("id".to_string(), id);
@@ -2116,7 +2116,7 @@ fn transform_response_from_responses(body: &mut Value) {
     chat_response.insert("choices".to_string(), json!([choice]));
     chat_response.insert("usage".to_string(), usage_out);
 
-    // 白名单穿透：只保留显式声明的 Responses 扩展字段
+    // Whitelist passthrough: only preserve declared Responses extension fields
     for key in RESPONSES_RESPONSE_EXTENSION_FIELDS {
         if let Some(value) = obj.get(*key) {
             if !chat_response.contains_key(*key) {
@@ -2129,7 +2129,7 @@ fn transform_response_from_responses(body: &mut Value) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  单元测试
+//  Unit tests
 // ═══════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
@@ -2193,7 +2193,7 @@ mod tests {
 
         assert_eq!(body["instructions"], "Be brief.");
         let input = body["input"].as_array().unwrap();
-        // system 已移到 instructions，input 里只剩 user
+        // system moved to instructions, only user remains in input
         assert_eq!(input.len(), 1);
         assert_eq!(input[0]["role"], "user");
     }
@@ -2278,10 +2278,10 @@ mod tests {
 
         let tool = &body["tools"][0];
         assert_eq!(tool["type"], "function");
-        // 解包后直接在顶层
+        // Unwrapped directly at top level
         assert_eq!(tool["name"], "get_weather");
         assert_eq!(tool["description"], "Get weather");
-        // 不再有嵌套 function 字段
+        // No longer has nested function field
         assert!(tool.get("function").is_none());
     }
 
@@ -2338,7 +2338,7 @@ mod tests {
         assert!(body.get("n").is_none());
         assert!(body.get("logit_bias").is_none());
         assert!(body.get("logprobs").is_none());
-        // top_logprobs 是 Responses API 支持的标准字段，应保留
+        // top_logprobs is standard field supported by Responses API, should be preserved
         assert!(body.get("top_logprobs").is_some());
         assert!(body.get("presence_penalty").is_none());
         assert!(body.get("frequency_penalty").is_none());
@@ -2440,7 +2440,7 @@ mod tests {
             tool_calls[0]["function"]["arguments"],
             "{\"city\":\"Tokyo\"}"
         );
-        // tool_calls 存在时 finish_reason 应为 tool_calls
+        // When tool_calls exist, finish_reason should be tool_calls
         assert_eq!(body["choices"][0]["finish_reason"], "tool_calls");
     }
 
@@ -2462,7 +2462,7 @@ mod tests {
         });
         a.transform_response(&mut body);
 
-        // 公理二：响应方向未知字段也要穿透
+        // Axiom 2: response direction unknown fields must also passthrough
         assert_eq!(body["x_future_response_field"], "preserve_me");
         assert_eq!(body["reasoning"]["effort"], "high");
     }
@@ -2635,44 +2635,44 @@ mod tests {
     fn responses_sse_non_failed_response_events_do_not_leak_to_openai_clients() {
         let a = ResponsesAdapter;
 
-        // 这些 response.* 事件不应该被透传给 OpenAI 兼容客户端
+        // These response.* events should not leak to OpenAI compatible clients
         for event in [
-            // response.output_item.added - 输出项添加事件
+            // response.output_item.added - output item added event
             json!({"type": "response.output_item.added", "response_id": "resp_1", "output_index": 0, "item": {"type": "message"}}),
-            // response.output_item.done - 输出项完成事件
+            // response.output_item.done - output item done event
             json!({"type": "response.output_item.done", "response_id": "resp_1", "output_index": 0, "item": {"type": "message"}}),
-            // response.function_call_arguments.done - 函数调用参数完成事件
+            // response.function_call_arguments.done - function call arguments done event
             json!({"type": "response.function_call_arguments.done", "response_id": "resp_1", "item_id": "call_1", "output_index": 0, "arguments": "{}"}),
-            // response.output_text.done - 输出文本完成事件
+            // response.output_text.done - output text done event
             json!({"type": "response.output_text.done", "response_id": "resp_1", "item_id": "msg_1", "text": "done"}),
-            // response.reasoning_summary_text.delta - reasoning 摘要增量（非 error）
+            // response.reasoning_summary_text.delta - reasoning summary delta (not error)
             json!({"type": "response.reasoning_summary_text.delta", "response_id": "resp_1", "item_id": "rsn_1", "output_index": 0, "summary_index": 0, "delta": "thinking"}),
         ] {
             let line = serde_json::to_string(&event).unwrap();
             let result = a.transform_sse_line(&line);
-            // 非失败的事件不应泄漏给 Chat 下游
+            // Non-failure events should not leak to downstream Chat
             assert_eq!(result, None, "Event {} should be filtered", event["type"]);
         }
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  下游方向：Responses API → chat.completions 格式转换
+// Downstream: Responses API -> chat.completions format conversion
 // ═══════════════════════════════════════════════════════════════════
 
-/// 把 Responses API 的 `input` 字段转成 Chat Completions 的 `messages` 数组。
+/// Convert Responses API `input` field to Chat Completions `messages` array.
 ///
-/// `input` 可以是：
-/// - 纯字符串 → 单条 user 消息
-/// - 消息数组：字符串、message 对象、function_call、function_call_output
-/// - 对象（少见，序列化为 user 消息）
+/// `input` can be:
+/// - Raw string -> single user message
+/// - Messages array: string, message object, function_call, function_call_output
+/// - Object (serialized as user message)
 ///
-/// 多轮工具使用：function_call → assistant tool_calls，
+/// Multi-turn tool usage: function_call -> assistant tool_calls,
 /// function_call_output → tool message。
 pub fn input_to_messages(input: &Value, instructions: Option<&str>) -> Vec<Value> {
     let mut msgs: Vec<Value> = Vec::new();
 
-    // 可选的 system 消息来自 `instructions`
+    // Optional system message comes from `instructions`
     if let Some(inst) = instructions {
         if !inst.is_empty() {
             msgs.push(json!({ "role": "system", "content": inst }));
@@ -2684,8 +2684,8 @@ pub fn input_to_messages(input: &Value, instructions: Option<&str>) -> Vec<Value
             msgs.push(json!({ "role": "user", "content": s }));
         }
         Value::Array(items) => {
-            // 将连续的 function_call + function_call_output 配对
-            // 组合成 assistant tool_calls 消息 + 单独的 tool 消息
+            // Pair consecutive function_call + function_call_output
+            // combine into assistant tool_calls message + separate tool message
             let mut i = 0;
             while i < items.len() {
                 let item = &items[i];
@@ -2694,12 +2694,12 @@ pub fn input_to_messages(input: &Value, instructions: Option<&str>) -> Vec<Value
                     let typ = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
                     match typ {
-                        // ── input_image → 带 image_url 的 user 消息 ──
+                        // -- input_image -> user message with image_url --
                         "input_image" => {
                             let detail =
                                 obj.get("detail").and_then(|v| v.as_str()).unwrap_or("auto");
 
-                            // 处理 image_url（URL 或 data URL）
+                            // Process image_url (URL or data URL)
                             if let Some(image_url) = obj.get("image_url").and_then(|v| v.as_str()) {
                                 if !image_url.is_empty() {
                                     msgs.push(json!({
@@ -2711,12 +2711,12 @@ pub fn input_to_messages(input: &Value, instructions: Option<&str>) -> Vec<Value
                                     }));
                                 }
                             }
-                            // 处理 image_data（base64）→ 转为 data URL
+                            // Process image_data (base64) -> convert to data URL
                             else if let Some(image_data) =
                                 obj.get("image_data").and_then(|v| v.as_str())
                             {
                                 if !image_data.is_empty() {
-                                    // 如果没有指定媒体类型，默认假设 PNG
+                                    // Default to PNG if media type unspecified
                                     let data_url = if image_data.starts_with("data:") {
                                         image_data.to_string()
                                     } else {
@@ -2735,9 +2735,9 @@ pub fn input_to_messages(input: &Value, instructions: Option<&str>) -> Vec<Value
                             continue;
                         }
 
-                        // ── input_file → 直接透传 ──
+                        // -- input_file -> direct passthrough --
                         "input_file" => {
-                            // 直接透传 - 让上游决定如何处理
+                            // Direct passthrough - let upstream decide handling
                             msgs.push(json!({
                                 "role": "user",
                                 "content": obj.clone()
@@ -2746,7 +2746,7 @@ pub fn input_to_messages(input: &Value, instructions: Option<&str>) -> Vec<Value
                             continue;
                         }
 
-                        // ── function_call → 带 tool_calls 的 assistant 消息 ──
+                        // -- function_call -> assistant message with tool_calls --
                         "function_call" => {
                             let call_id = obj.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
                             let name = obj.get("name").and_then(|v| v.as_str()).unwrap_or("");
@@ -2755,7 +2755,7 @@ pub fn input_to_messages(input: &Value, instructions: Option<&str>) -> Vec<Value
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("{}");
 
-                            // 收集这个 assistant 轮次的 tool calls
+                            // Collect tool calls for this assistant turn
                             let mut tool_calls = vec![json!({
                                 "id": call_id,
                                 "type": "function",
@@ -2765,7 +2765,7 @@ pub fn input_to_messages(input: &Value, instructions: Option<&str>) -> Vec<Value
                                 }
                             })];
 
-                            // 如果下一个项目也是 function_call（同一轮次），将它们分组
+                            // If next item is also function_call (same turn), group them
                             let mut j = i + 1;
                             while j < items.len() {
                                 if let Value::Object(next_obj) = &items[j] {
@@ -2810,7 +2810,7 @@ pub fn input_to_messages(input: &Value, instructions: Option<&str>) -> Vec<Value
                             continue;
                         }
 
-                        // ── function_call_output → tool 消息 ──
+                        // -- function_call_output -> tool message --
                         "function_call_output" => {
                             let call_id = obj.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
                             let output = match obj.get("output") {
@@ -2830,13 +2830,13 @@ pub fn input_to_messages(input: &Value, instructions: Option<&str>) -> Vec<Value
                             continue;
                         }
 
-                        // ── reasoning 跳过（思维链元数据，不是对话消息） ──
+                        // -- reasoning skip (chain of thought metadata, not dialogue message) --
                         "reasoning" => {
                             i += 1;
                             continue;
                         }
 
-                        // ── 常规消息 ──
+                        // -- Regular message --
                         _ => {
                             let role = match obj.get("role") {
                                 Some(Value::String(r)) => match r.as_str() {
@@ -2919,7 +2919,7 @@ pub fn input_to_messages(input: &Value, instructions: Option<&str>) -> Vec<Value
                                     }
 
                                     if image_parts.is_empty() && raw_parts.is_empty() {
-                                        // 没有结构化部分 - 将文本连接为纯字符串（向后兼容）
+                                        // No structured part - join text into plain string (backward compatible)
                                         let joined = texts.join("\n");
                                         if joined.is_empty() {
                                             None
@@ -2927,7 +2927,7 @@ pub fn input_to_messages(input: &Value, instructions: Option<&str>) -> Vec<Value
                                             Some(json!(joined))
                                         }
                                     } else {
-                                        // 有图片或未知部分 - 构建结构化内容数组
+                                        // Has image or unknown parts - build structured content array
                                         let mut content_parts: Vec<Value> = texts
                                             .iter()
                                             .map(|t| json!({"type": "text", "text": t}))
@@ -2947,10 +2947,10 @@ pub fn input_to_messages(input: &Value, instructions: Option<&str>) -> Vec<Value
                             if let Some(content) = content_value {
                                 msgs.push(json!({ "role": role, "content": content }));
                             } else if matches!(typ, "function_call" | "function_call_output") {
-                                // 已在上面处理；跳过空消息回退
+                                // Already handled above; skip empty message fallback
                             } else if !typ.is_empty() {
-                                // 保留未知的结构化 Responses 输入项，而不是丢弃
-                                // 或字符串化。上游可以决定是否支持它们。
+                                // Preserve unknown structured Responses input items instead of dropping
+                                // or stringifying; upstream can determine support.
                                 msgs.push(json!({ "role": role, "content": obj.clone() }));
                             }
 
@@ -2966,10 +2966,10 @@ pub fn input_to_messages(input: &Value, instructions: Option<&str>) -> Vec<Value
             }
         }
         other => {
-            // 对于 null 或其他类型，返回空内容而不自动填充
+            // Return empty content for null or other types without autofilling
             if other.is_null() {
-                // 这种情况应该在 handler 级别的验证中被捕获；
-                // 如果到达这里，返回空消息让调用方处理
+                // This should be caught in handler validation;
+                // if reached, return empty message for caller handling
                 return msgs;
             }
             let text = serde_json::to_string(other).unwrap_or_else(|_| "{}".to_string());
@@ -2979,40 +2979,40 @@ pub fn input_to_messages(input: &Value, instructions: Option<&str>) -> Vec<Value
         }
     }
 
-    // 只有在有实际输入内容时才添加默认 user 消息
-    // （null/missing input 应该在 handler 级别被拒绝）
+    // Only add default user message when actual input content exists
+    // (null/missing input should be rejected at handler level)
     if msgs.is_empty() && instructions.is_none() {
-        // 没有内容也没有指令 - 这应该在验证中被捕获
-        // 返回空让调用方处理
+        // No content or instructions - should be caught in validation
+        // Return empty for caller handling
         return msgs;
     }
 
     msgs
 }
 
-/// 把 Responses API 的工具定义转成 Chat Completions 格式。
+/// Convert Responses API tool definition to Chat Completions format.
 ///
 /// Responses API: `{ type: "function", name, description, parameters, strict }`
 /// Chat API:      `{ type: "function", function: { name, description, parameters, strict } }`
 ///
-/// 临时策略：当前这条路径明确是 Responses → Chat 上游的降级路径，
-/// 暂不考虑原生 Responses 上游能力。为了避免把 `custom`、`web_search`、
-/// `file_search`、`image_generation` 等 Responses 专属工具盲透传到 Chat 上游，
-/// 这里仅保留可安全映射的 function tools；其他工具类型先跳过并记录警告。
-/// 后续 P0 架构改造会用中立 IR + Capability Router 重新决定哪些上游能承载这些工具。
+/// Temporary strategy: Responses -> Chat fallback path,
+/// skipping non-function tool types to prevent Chat upstream schema errors.
+/// Responses-specific tools (custom, web_search, file_search, image_generation)
+/// only retain function tools that map safely; other types are skipped with warnings.
+/// Capability router will re-evaluate upstream capacity for these tools.
 pub fn convert_tools(tools: &[Value]) -> Option<Value> {
     let converted: Vec<Value> = tools
         .iter()
         .filter_map(|t| {
             let typ = t.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
-            // 如果已经是 Chat 格式，直接透传
+            // Direct passthrough if already in Chat format
             if typ == "function" && t.get("function").is_some() {
                 return Some(t.clone());
             }
 
-            // 将 Responses 格式的 function tool 转为 Chat 格式，
-            // 同时保留未知的顶层字段以实现透传优先的兼容性。
+            // Convert Responses format function tool to Chat format,
+            // while preserving unknown top-level fields for compatibility.
             if typ == "function" {
                 let mut tool = t.clone();
                 let Some(tool_obj) = tool.as_object_mut() else {
@@ -3044,11 +3044,11 @@ pub fn convert_tools(tools: &[Value]) -> Option<Value> {
                 return Some(tool);
             }
 
-            // 临时止血：Chat Completions 上游通常不接受 Responses 专属工具类型。
-            // 继续透传会导致上游返回 `function is not set` 或 `Tools[N].Type invalid`。
-            // 当前先跳过，避免错误污染 failover；正式方案见 PLAN.md 的 P0 中立 IR 改造。
+            // Chat Completions upstream generally does not accept Responses-specific tool types.
+            // Continuing passthrough causes upstream errors like `function is not set`.
+            // Skip temporarily to avoid error pollution.
             log::warn!(
-                "Responses 转 Chat 临时跳过不支持的工具类型: {}",
+                "Responses to Chat temporarily skipping unsupported tool type: {}",
                 if typ.is_empty() { "<missing>" } else { typ }
             );
             None
@@ -3062,13 +3062,13 @@ pub fn convert_tools(tools: &[Value]) -> Option<Value> {
     }
 }
 
-/// 判断 tool_calls 中的项是否为 function tool call
+/// Determine whether item in tool_calls is a function tool call
 pub fn is_function_tool_call(tc: &Value) -> bool {
     tc.get("function").is_some()
         && (tc.get("type").and_then(|v| v.as_str()) == Some("function") || tc.get("type").is_none())
 }
 
-/// 将 tool_calls 中的项转为 Responses API 的 output item 格式
+/// Convert item in tool_calls to Responses API output item format
 pub fn passthrough_output_item(tc: &Value, status: Option<&str>) -> Value {
     let mut item = tc.clone();
     if let Some(obj) = item.as_object_mut() {
@@ -3083,7 +3083,7 @@ pub fn passthrough_output_item(tc: &Value, status: Option<&str>) -> Value {
     item
 }
 
-/// 合并 tool_calls 的增量更新（用于流式响应）
+/// Merge incremental updates of tool_calls (for streaming responses)
 pub fn merge_tool_delta(item: &mut Value, delta: &Value) {
     if let (Some(item_obj), Some(delta_obj)) = (item.as_object_mut(), delta.as_object()) {
         for (key, value) in delta_obj {

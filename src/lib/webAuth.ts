@@ -4,7 +4,7 @@
  */
 
 const ADMIN_PREFIX = "/admin";
-export const TOKEN_KEY = "api-switch-web-admin-token";
+export const TOKEN_KEY = "smart-api-gateway-web-admin-token";
 
 export interface LoginResponse {
   token: string;
@@ -17,7 +17,7 @@ export type TokenValidationResult =
   | { status: "unreachable"; message: string }
   | { status: "error"; message: string };
 
-export const AUTH_EXPIRED_EVENT = "api-switch-auth-expired";
+export const AUTH_EXPIRED_EVENT = "smart-api-gateway-auth-expired";
 
 export interface AuthExpiredDetail {
   status?: number;

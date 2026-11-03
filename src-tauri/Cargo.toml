@@ -1,5 +1,5 @@
 [package]
-name = "api-switch"
+name = "smart-api-gateway"
 version = "0.8.42"
 description = "Personal API Management & Forwarding Center"
 authors = ["you"]
@@ -35,6 +35,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"
 futures = "0.3"
 bytes = "1.5"
 axum = "0.7"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
 tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5", features = ["cors"] }
 hyper = { version = "1.0", features = ["full"] }

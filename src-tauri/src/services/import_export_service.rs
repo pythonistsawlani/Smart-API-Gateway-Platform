@@ -4,8 +4,8 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-pub const FORMAT_ID: &str = "api-switch-channel-model-transfer";
-pub const EXPORTER: &str = "api-switch";
+pub const FORMAT_ID: &str = "smart-api-gateway-channel-model-transfer";
+pub const EXPORTER: &str = "smart-api-gateway";
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -100,16 +100,16 @@ pub fn validate_transfer_payload(payload: &str) -> Result<ChannelModelTransfer, 
     const MAX_PAYLOAD_BYTES: usize = 1_000_000;
 
     if payload.trim().is_empty() {
-        return Err(AppError::Validation("导入文本不能为空".to_string()));
+        return Err(AppError::Validation("Import text cannot be empty".to_string()));
     }
     if payload.len() > MAX_PAYLOAD_BYTES {
         return Err(AppError::Validation(
-            "导入文本过大，请检查是否复制了正确的导出文本".to_string(),
+            "Import text is too large; please check if the correct export text was copied".to_string(),
         ));
     }
 
     let transfer: ChannelModelTransfer = serde_json::from_str(payload)
-        .map_err(|e| AppError::Validation(format!("导入文本不是有效的 JSON：{e}")))?;
+        .map_err(|e| AppError::Validation(format!("Import text is not valid JSON: {e}")))?;
 
     validate_transfer(&transfer)?;
     Ok(transfer)
@@ -118,23 +118,23 @@ pub fn validate_transfer_payload(payload: &str) -> Result<ChannelModelTransfer, 
 pub fn validate_transfer(transfer: &ChannelModelTransfer) -> Result<(), AppError> {
     if transfer.format != FORMAT_ID {
         return Err(AppError::Validation(
-            "导入文件格式不正确，必须是 API Switch 导出的渠道和模型数据".to_string(),
+            "Import file format is invalid; must be channel and model data exported by Smart API Gateway".to_string(),
         ));
     }
     if transfer.exporter != EXPORTER {
         return Err(AppError::Validation(
-            "导入数据来源无效，必须是 API Switch 导出的数据".to_string(),
+            "Import data source is invalid; must be data exported by Smart API Gateway".to_string(),
         ));
     }
     if transfer.schema_version != CURRENT_SCHEMA_VERSION {
         return Err(AppError::Validation(format!(
-            "不支持的导入数据版本：{}，当前仅支持版本 {}",
+            "Unsupported import data version: {}, currently only version {} is supported",
             transfer.schema_version, CURRENT_SCHEMA_VERSION
         )));
     }
     if transfer.data.channels.is_empty() {
         return Err(AppError::Validation(
-            "导入数据中没有渠道，至少需要包含 1 个渠道".to_string(),
+            "Import data contains no channels; at least 1 channel is required".to_string(),
         ));
     }
 
@@ -142,24 +142,24 @@ pub fn validate_transfer(transfer: &ChannelModelTransfer) -> Result<(), AppError
         let channel_no = channel_index + 1;
         if channel.name.trim().is_empty() {
             return Err(AppError::Validation(format!(
-                "第 {channel_no} 个渠道名称不能为空"
+                "Channel {channel_no} name cannot be empty"
             )));
         }
         if !is_valid_api_type(&channel.api_type) {
             return Err(AppError::Validation(format!(
-                "第 {channel_no} 个渠道 API 类型无效：{}",
+                "Channel {channel_no} API type is invalid: {}",
                 channel.api_type
             )));
         }
         if channel.base_url.trim().is_empty() {
             return Err(AppError::Validation(format!(
-                "第 {channel_no} 个渠道 Base URL 不能为空"
+                "Channel {channel_no} Base URL cannot be empty"
             )));
         }
         let lower_base_url = channel.base_url.trim().to_ascii_lowercase();
         if !lower_base_url.starts_with("http://") && !lower_base_url.starts_with("https://") {
             return Err(AppError::Validation(format!(
-                "第 {channel_no} 个渠道 Base URL 格式无效"
+                "Channel {channel_no} Base URL format is invalid"
             )));
         }
         let mut seen_models = HashSet::new();
@@ -168,18 +168,18 @@ pub fn validate_transfer(transfer: &ChannelModelTransfer) -> Result<(), AppError
             let normalized_model = model.model.trim().to_ascii_lowercase();
             if normalized_model.is_empty() {
                 return Err(AppError::Validation(format!(
-                    "第 {channel_no} 个渠道的第 {model_no} 个模型名称不能为空"
+                    "Model {model_no} name in channel {channel_no} cannot be empty"
                 )));
             }
             if !seen_models.insert(normalized_model) {
                 return Err(AppError::Validation(format!(
-                    "第 {channel_no} 个渠道中存在重复模型：{}",
+                    "Duplicate model in channel {channel_no}: {}",
                     model.model
                 )));
             }
             if model.group_name.trim().is_empty() {
                 return Err(AppError::Validation(format!(
-                    "第 {channel_no} 个渠道的模型 {} 分组名称不能为空",
+                    "Group name cannot be empty for model {} in channel {channel_no}",
                     model.model
                 )));
             }
@@ -223,10 +223,10 @@ pub fn build_import_preview(
 
     let mut warnings = Vec::new();
     if contains_api_keys {
-        warnings.push("导入文本包含 API Key，请自行妥善保管".to_string());
+        warnings.push("Imported text contains API Key, please keep it safe.".to_string());
     }
     for channel_name in &empty_model_channels {
-        warnings.push(format!("渠道 {channel_name} 没有关联模型"));
+        warnings.push(format!("Channel {channel_name} has no associated models"));
     }
 
     ImportPreview {
@@ -243,7 +243,7 @@ pub fn build_import_preview(
 pub fn build_transfer_json(channels: &[Channel], entries: &[ApiEntry]) -> Result<String, AppError> {
     let transfer = build_transfer(channels, entries);
     serde_json::to_string_pretty(&transfer)
-        .map_err(|e| AppError::Internal(format!("导出 JSON 生成失败：{e}")))
+        .map_err(|e| AppError::Internal(format!("Export JSON generation failed: {e}")))
 }
 
 pub fn build_transfer(channels: &[Channel], entries: &[ApiEntry]) -> ChannelModelTransfer {
@@ -324,8 +324,8 @@ mod tests {
 
     fn valid_payload() -> String {
         r#"{
-          "format": "api-switch-channel-model-transfer",
-          "exporter": "api-switch",
+          "format": "smart-api-gateway-channel-model-transfer",
+          "exporter": "smart-api-gateway",
           "schema_version": 1,
           "app_version": "0.7.27",
           "exported_at": "2026-06-01T12:00:00+08:00",
@@ -337,7 +337,7 @@ mod tests {
               "base_url": "https://api.openai.com",
               "api_key": "sk-test",
               "enabled": true,
-              "notes": "主渠道",
+              "notes": "Main Channel",
               "available_models": [{ "id": "gpt-4.1", "name": "gpt-4.1", "owned_by": "openai" }],
               "selected_models": ["gpt-4.1"],
               "models": [{
@@ -348,7 +348,7 @@ mod tests {
                 "sort_index": 7,
                 "provider_logo": "openai",
                 "release_date": "2025-04-14",
-                "model_meta_zh": "中文说明",
+                "model_meta_zh": "Chinese description",
                 "model_meta_en": "English description",
                 "score": 12.5
               }]
@@ -360,7 +360,7 @@ mod tests {
 
     #[test]
     fn validate_accepts_api_switch_export_payload() {
-        let transfer = validate_transfer_payload(&valid_payload()).expect("有效导出文本应通过校验");
+        let transfer = validate_transfer_payload(&valid_payload()).expect("Valid export text should pass validation");
 
         assert_eq!(transfer.format, FORMAT_ID);
         assert_eq!(transfer.exporter, EXPORTER);
@@ -373,7 +373,7 @@ mod tests {
     fn validate_accepts_empty_api_key_channel() {
         let payload = valid_payload().replace("\"api_key\": \"sk-test\"", "\"api_key\": \"\"");
 
-        let transfer = validate_transfer_payload(&payload).expect("空 API Key 渠道也应允许导入");
+        let transfer = validate_transfer_payload(&payload).expect("Empty API Key channel should also be allowed to import");
 
         assert_eq!(transfer.data.channels[0].api_key, "");
         let preview = build_import_preview(&transfer, 0, 0);
@@ -383,23 +383,23 @@ mod tests {
     #[test]
     fn validate_rejects_non_api_switch_payload() {
         let payload =
-            valid_payload().replace("\"exporter\": \"api-switch\"", "\"exporter\": \"other\"");
+            valid_payload().replace("\"exporter\": \"smart-api-gateway\"", "\"exporter\": \"other\"");
 
-        let error = validate_transfer_payload(&payload).expect_err("非本功能导出的数据必须拒绝");
+        let error = validate_transfer_payload(&payload).expect_err("Data not exported by this feature must be rejected");
 
-        assert!(error.to_string().contains("必须是 API Switch 导出的数据"));
+        assert!(error.to_string().contains("must be data exported by Smart API Gateway"));
     }
 
     #[test]
     fn validate_rejects_empty_channel_list_before_delete() {
         let payload = valid_payload().replace(
-            "[{\n              \"name\": \"OpenAI\",\n              \"api_type\": \"openai\",\n              \"base_url\": \"https://api.openai.com\",\n              \"api_key\": \"sk-test\",\n              \"enabled\": true,\n              \"notes\": \"主渠道\",\n              \"available_models\": [{ \"id\": \"gpt-4.1\", \"name\": \"gpt-4.1\", \"owned_by\": \"openai\" }],\n              \"selected_models\": [\"gpt-4.1\"],\n              \"models\": [{\n                \"model\": \"gpt-4.1\",\n                \"display_name\": \"GPT 4.1\",\n                \"group_name\": \"auto\",\n                \"enabled\": true,\n                \"sort_index\": 7,\n                \"provider_logo\": \"openai\",\n                \"release_date\": \"2025-04-14\",\n                \"model_meta_zh\": \"中文说明\",\n                \"model_meta_en\": \"English description\",\n                \"score\": 12.5\n              }]\n            }]",
+            "[{\n              \"name\": \"OpenAI\",\n              \"api_type\": \"openai\",\n              \"base_url\": \"https://api.openai.com\",\n              \"api_key\": \"sk-test\",\n              \"enabled\": true,\n              \"notes\": \"Main Channel\",\n              \"available_models\": [{ \"id\": \"gpt-4.1\", \"name\": \"gpt-4.1\", \"owned_by\": \"openai\" }],\n              \"selected_models\": [\"gpt-4.1\"],\n              \"models\": [{\n                \"model\": \"gpt-4.1\",\n                \"display_name\": \"GPT 4.1\",\n                \"group_name\": \"auto\",\n                \"enabled\": true,\n                \"sort_index\": 7,\n                \"provider_logo\": \"openai\",\n                \"release_date\": \"2025-04-14\",\n                \"model_meta_zh\": \"Chinese description\",\n                \"model_meta_en\": \"English description\",\n                \"score\": 12.5\n              }]\n            }]",
             "[]",
         );
 
-        let error = validate_transfer_payload(&payload).expect_err("空导入必须拒绝");
+        let error = validate_transfer_payload(&payload).expect_err("Empty import must be rejected");
 
-        assert!(error.to_string().contains("至少需要包含 1 个渠道"));
+        assert!(error.to_string().contains("at least 1 channel is required"));
     }
 
     #[test]
@@ -409,14 +409,14 @@ mod tests {
             ", {\n                \"model\": \"gpt-4.1\",\n                \"display_name\": \"Duplicate\",\n                \"group_name\": \"auto\",\n                \"enabled\": true,\n                \"sort_index\": 8\n              }]\n            }]\n          }",
         );
 
-        let error = validate_transfer_payload(&payload).expect_err("同一渠道内重复模型必须拒绝");
+        let error = validate_transfer_payload(&payload).expect_err("Duplicate models within the same channel must be rejected");
 
-        assert!(error.to_string().contains("重复模型"));
+        assert!(error.to_string().contains("Duplicate model"));
     }
 
     #[test]
     fn preview_counts_channels_models_and_api_keys() {
-        let transfer = validate_transfer_payload(&valid_payload()).expect("有效导出文本应通过校验");
+        let transfer = validate_transfer_payload(&valid_payload()).expect("Valid export text should pass validation");
 
         let preview = build_import_preview(&transfer, 3, 18);
 
@@ -444,7 +444,7 @@ mod tests {
             selected_models: vec!["gpt-4.1".to_string()],
             enabled: true,
             last_fetch_at: 123456,
-            notes: "主渠道".to_string(),
+            notes: "Main Channel".to_string(),
             upstream_headers: None,
             response_ms: "999".to_string(),
             created_at: 1,
@@ -467,15 +467,15 @@ mod tests {
             response_ms: Some("888".to_string()),
             provider_logo: Some("openai".to_string()),
             release_date: Some("2025-04-14".to_string()),
-            model_meta_zh: Some("中文说明".to_string()),
+            model_meta_zh: Some("Chinese description".to_string()),
             model_meta_en: Some("English description".to_string()),
             group_name: Some("coding".to_string()),
             score: 12.5,
         };
 
-        let json = build_transfer_json(&[channel], &[entry]).expect("导出 JSON 应生成成功");
+        let json = build_transfer_json(&[channel], &[entry]).expect("Export JSON should generate successfully");
 
-        assert!(json.contains("api-switch-channel-model-transfer"));
+        assert!(json.contains("smart-api-gateway-channel-model-transfer"));
         assert!(json.contains("sk-test"));
         assert!(json.contains("coding"));
         assert!(json.contains("\"sort_index\": 7"));
@@ -493,7 +493,7 @@ mod tests {
             "",
         );
         let transfer = validate_transfer_payload(&payload)
-            .expect("缺少 upstream_headers 字段的旧文件应可导入");
+            .expect("Legacy file missing upstream_headers field should be importable");
         assert!(transfer.data.channels[0].upstream_headers.is_none());
     }
 }

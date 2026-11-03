@@ -1,5 +1,5 @@
 // ============================================================
-// API Switch - Type Definitions
+// Smart API Gateway - Type Definitions
 // ============================================================
 
 // --- Sort Mode ---
@@ -25,7 +25,7 @@ export interface Channel {
   updated_at: number;
 }
 
-export type ApiType = "openai" | "claude" | "gemini" | "azure" | "custom" | "responses";
+export type ApiType = "openai" | "claude" | "gemini" | "azure" | "custom" | "responses" | "other";
 
 export const API_TYPE_OPTIONS: { value: ApiType; label: string }[] = [
   { value: "custom", label: "Custom (OpenAI-compatible)" },
@@ -34,6 +34,7 @@ export const API_TYPE_OPTIONS: { value: ApiType; label: string }[] = [
   { value: "gemini", label: "Google Gemini" },
   { value: "azure", label: "Azure OpenAI" },
   { value: "responses", label: "OpenAI Responses (Beta)" },
+  { value: "other", label: "Other (Exact URL)" },
 ];
 
 export const API_TYPE_DEFAULT_URLS: Record<ApiType, string> = {
@@ -43,6 +44,7 @@ export const API_TYPE_DEFAULT_URLS: Record<ApiType, string> = {
   azure: "",
   custom: "",
   responses: "https://api.openai.com",
+  other: "",
 };
 
 export interface ModelInfo {
@@ -242,6 +244,15 @@ export interface AppSettings {
   web_admin_username: string;
   web_admin_password: string;
   web_admin_port: number;
+  bind_external: boolean;
+  rate_limit_enabled: boolean;
+  rate_limit_rpm_per_ip: number;
+  rate_limit_rpm_per_key: number;
+  rate_limit_rpm_per_model: number;
+  cors_allowed_origins: string;
+  tls_enabled: boolean;
+  tls_cert_path: string;
+  tls_key_path: string;
   app_version: string;
 }
 
@@ -269,7 +280,7 @@ export interface ChannelModelImportResult {
 export const DEFAULT_SETTINGS: VersionedAppSettings = {
   proxy_enabled: false,
   listen_port: 9090,
-  access_key_required: false,
+  access_key_required: true,
   circuit_failure_threshold: 5,
   proxy_connect_timeout_secs: 30,
   circuit_recovery_secs: 300,
@@ -277,7 +288,7 @@ export const DEFAULT_SETTINGS: VersionedAppSettings = {
   circuit_retry_codes: "100-199,300-399,401-407,409-499,500-503,505-523,525-599",
   disable_keywords: "Your credit balance is too low\nThis organization has been disabled.\nYou exceeded your current quota\nPermission denied\nThe security token included in the request is invalid\nOperation not allowed\nYour account is not authorized\ninsufficient_quota\nquota_exceeded_error\ntoken plan limit exhausted\nUpstream rate limit exceeded\ninvalid api key\nUnauthorized - Invalid token",
   keyword_freeze_scope: "model",
-  locale: "zh",
+  locale: "en",
   theme: "light",
   autostart: false,
   start_minimized: false,
@@ -289,9 +300,18 @@ export const DEFAULT_SETTINGS: VersionedAppSettings = {
   record_raw_protocol_data: false,
   passthrough_header_injection: false,
   web_admin_enabled: false,
-  web_admin_username: "admin",
-  web_admin_password: "admin",
+  web_admin_username: "",
+  web_admin_password: "",
   web_admin_port: 9099,
+  bind_external: false,
+  rate_limit_enabled: true,
+  rate_limit_rpm_per_ip: 120,
+  rate_limit_rpm_per_key: 240,
+  rate_limit_rpm_per_model: 600,
+  cors_allowed_origins: "",
+  tls_enabled: false,
+  tls_cert_path: "",
+  tls_key_path: "",
   app_version: __APP_VERSION__,
   _version: 0,
 };

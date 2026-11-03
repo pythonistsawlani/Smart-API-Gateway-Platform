@@ -11,10 +11,10 @@ pub fn refresh_tray_menu(app: tauri::AppHandle) -> Result<(), AppError> {
 }
 
 // ---------------------------------------------------------------------------
-// 可复用 helper：不依赖 tauri::State，供 ServerApi 和 admin handler 调用
+// Reusable helper: does not depend on tauri::State, for ServerApi and admin handler invocations
 // ---------------------------------------------------------------------------
 
-/// 启动代理服务器并绑定 admin router。
+/// Start proxy server and bind admin router.
 pub async fn start_proxy_from_state(
     app: tauri::AppHandle,
     state: &AppState,
@@ -51,14 +51,14 @@ pub async fn start_proxy_from_state(
 
     *proxy_guard = Some(server);
 
-    // 更新配置标记，然后从 DB 重建 L1 settings 缓存
+    // Update config flag, then rebuild L1 settings cache from DB
     state.db.set_config_value("proxy_enabled", "1")?;
     refresh_settings_l1(state).await?;
 
     Ok(status)
 }
 
-/// 停止正在运行的代理服务器。
+/// Stop the running proxy server.
 pub async fn stop_proxy_from_state(state: &AppState) -> Result<(), AppError> {
     let mut proxy_guard = state.proxy.write().await;
     if let Some(server) = proxy_guard.take() {
@@ -72,7 +72,7 @@ pub async fn stop_proxy_from_state(state: &AppState) -> Result<(), AppError> {
     Ok(())
 }
 
-/// 查询代理当前运行状态（不改变任何状态）。
+/// Query current proxy running status (does not alter any state).
 pub async fn proxy_status_from_state(state: &AppState) -> Result<ProxyStatus, AppError> {
     let proxy_guard = state.proxy.read().await;
     let settings = state.settings.read().await.clone();
@@ -88,7 +88,7 @@ pub async fn proxy_status_from_state(state: &AppState) -> Result<ProxyStatus, Ap
 }
 
 // ---------------------------------------------------------------------------
-// Tauri command 薄包装：通过 ServerApi 调用
+// Tauri command thin wrapper: invoked via ServerApi
 // ---------------------------------------------------------------------------
 
 #[tauri::command]

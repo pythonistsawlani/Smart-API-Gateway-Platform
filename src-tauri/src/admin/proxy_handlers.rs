@@ -12,8 +12,8 @@ pub struct ProxyStatusResponse {
     pub port: i32,
 }
 
-/// 从 AdminState 构建 ServerApi 实例。
-/// 当 runtime 或 app_handle 缺失时返回错误。
+/// Build a ServerApi instance from AdminState.
+/// Returns an error when runtime or app_handle is missing.
 fn server_api_from_admin(state: &AdminState) -> Result<ServerApi, AdminError> {
     let runtime = state
         .runtime

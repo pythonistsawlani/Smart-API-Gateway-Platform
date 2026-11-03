@@ -19,18 +19,18 @@ use serde_json::{json, Value};
 /// Default API version for Azure OpenAI.
 const AZURE_API_VERSION: &str = "2024-02-01";
 
-// ─── 黑名单常量 + 构建器 ───────────────────────────────────────
+// --- Blacklist constants + builders -----------------------------------
 
-/// Azure 请求出口要剔除的字段。
+/// Fields to drop for Azure request egress.
 ///
-/// 黑名单决策（见 docs/protocol-passthrough-fix-plan.md §3.4）：保留未知/未来
-/// 字段，仅丢弃外来协议（Anthropic / Gemini native / OpenAI Responses）专有
-/// 字段，外加 `model`（Azure 通过 URL 的 deployment 传递，body 不带 model）。
-/// Azure≈OpenAI，支持 logit_bias / service_tier / store 等，故不剔除这些。
+/// Blacklist decision: preserve unknown/future
+/// fields, only dropping foreign protocol proprietary fields (Anthropic / Gemini native / OpenAI Responses),
+/// plus `model` (Azure passes model via deployment in URL, body carries no model).
+/// Azure is OpenAI-compatible and supports logit_bias / service_tier / store, so these are retained.
 const AZURE_REQUEST_FOREIGN_DROP: &[&str] = &[
-    // Azure 特有：model 走 URL，不进 body
+    // Azure specific: model in URL, not body
     "model",
-    // OpenAI Responses API 专有
+    // OpenAI Responses API proprietary
     "input",
     "instructions",
     "include",
@@ -40,7 +40,7 @@ const AZURE_REQUEST_FOREIGN_DROP: &[&str] = &[
     "truncation",
     "previous_response_id",
     "max_tool_calls",
-    // Anthropic 专有
+    // Anthropic proprietary
     "anthropic_version",
     "anthropic_beta",
     "betas",
@@ -51,19 +51,19 @@ const AZURE_REQUEST_FOREIGN_DROP: &[&str] = &[
     "context_management",
     "mcp_servers",
     "container",
-    // Gemini native 专有
+    // Gemini native proprietary
     "contents",
     "generationConfig",
     "safetySettings",
     "systemInstruction",
     "cachedContent",
-    // 内部暂存字段
+    // Internal scratch fields
     "__as_raw_claude_req",
     "__as_raw_responses_req",
     "__as_raw_gemini_req",
 ];
 
-/// Azure 响应出口要剔除的外来协议专有字段
+/// Foreign protocol proprietary fields to drop for Azure response egress
 const AZURE_RESPONSE_FOREIGN_DROP: &[&str] = &[
     "output",
     "output_text",
@@ -79,7 +79,7 @@ const AZURE_RESPONSE_FOREIGN_DROP: &[&str] = &[
     "__as_raw_gemini_req",
 ];
 
-/// 从中间协议构建 Azure 请求输出对象（黑名单：保留全部，剔除外来字段与 model）
+/// Build Azure request output object from intermediate protocol (blacklist: preserve all, drop foreign fields and model)
 fn build_azure_request_output(src: &serde_json::Map<String, Value>) -> Value {
     let mut out = src.clone();
     for key in AZURE_REQUEST_FOREIGN_DROP {
@@ -88,7 +88,7 @@ fn build_azure_request_output(src: &serde_json::Map<String, Value>) -> Value {
     Value::Object(out)
 }
 
-/// 从中间协议构建 Azure 响应输出对象（黑名单：保留全部，仅剔除外来字段）
+/// Build Azure response output object from intermediate protocol (blacklist: preserve all, drop foreign fields)
 fn build_azure_response_output(src: &serde_json::Map<String, Value>) -> Value {
     let mut out = src.clone();
     for key in AZURE_RESPONSE_FOREIGN_DROP {
@@ -136,7 +136,7 @@ impl ProtocolAdapter for AzureAdapter {
     }
 
     fn transform_request(&self, body: &mut Value, _actual_model: &str) {
-        // 白名单构建：只保留 Azure 标准字段 + 扩展字段（不含 model，Azure 通过 URL 传递）
+        // Whitelist build: only preserve Azure standard fields + extension fields (excluding model, which Azure passes via URL)
         let Some(src) = body.as_object() else {
             return;
         };
@@ -144,7 +144,7 @@ impl ProtocolAdapter for AzureAdapter {
     }
 
     fn transform_response(&self, body: &mut Value) {
-        // 白名单构建：只保留 Azure 标准字段 + 扩展字段
+        // Whitelist build: only preserve Azure standard fields + extension fields
         let Some(src) = body.as_object() else {
             return;
         };
@@ -343,8 +343,8 @@ mod tests {
         assert_eq!(body["temperature"], 0.2);
     }
 
-    /// 黑名单决策：Azure builder 应穿透未知/未来字段，仅剔除外来协议字段与 model。
-    /// Azure≈OpenAI，logit_bias/service_tier/store 等标准字段应保留。
+    /// Blacklist decision: Azure builder should passthrough unknown/future fields, only dropping foreign protocol fields and model.
+    /// Azure is OpenAI-compatible; standard fields like logit_bias/service_tier/store should be preserved.
     #[test]
     fn azure_transform_request_passes_through_unknown_keeps_standard() {
         let adapter = AzureAdapter;
@@ -360,15 +360,15 @@ mod tests {
 
         adapter.transform_request(&mut body, "deployment-name");
 
-        // model 走 URL，body 不带
+        // model via URL, not in body
         assert!(body.get("model").is_none());
-        // Azure 标准字段保留
+        // Preserve Azure standard fields
         assert_eq!(body["logit_bias"]["1"], 1);
         assert_eq!(body["service_tier"], "auto");
         assert_eq!(body["store"], true);
-        // 未知字段穿透
+        // Passthrough unknown fields
         assert_eq!(body["x_future_azure_field"]["nested"], "value");
-        // 外来协议字段剔除
+        // Drop foreign protocol fields
         assert!(body.get("anthropic_version").is_none());
     }
 

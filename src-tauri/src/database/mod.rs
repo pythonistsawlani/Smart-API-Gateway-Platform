@@ -27,7 +27,7 @@ pub struct Database {
 }
 
 impl Database {
-    /// Open database next to the real api-switch executable (portable mode).
+    /// Open database next to the real smart-api-gateway executable (portable mode).
     pub fn open() -> Result<Self, AppError> {
         Self::open_at(data_dir::database_path()?)
     }
@@ -156,7 +156,7 @@ fn backup_corrupt_database(db_path: &Path) -> Result<(), AppError> {
     }
 
     let timestamp = Utc::now().format("%Y%m%d%H%M%S");
-    let backup_path = db_path.with_file_name(format!("api-switch.corrupt.{timestamp}.db"));
+    let backup_path = db_path.with_file_name(format!("smart-api-gateway.corrupt.{timestamp}.db"));
 
     std::fs::rename(db_path, &backup_path).map_err(|e| {
         AppError::Database(format!(
@@ -174,13 +174,13 @@ fn backup_corrupt_database(db_path: &Path) -> Result<(), AppError> {
         let file_name = db_path
             .file_name()
             .and_then(|name| name.to_str())
-            .unwrap_or("api-switch.db");
+            .unwrap_or("smart-api-gateway.db");
         let sidecar_path = db_path.with_file_name(format!("{file_name}{suffix}"));
         if sidecar_path.exists() {
             let backup_file_name = backup_path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .unwrap_or("api-switch.corrupt.db");
+                .unwrap_or("smart-api-gateway.corrupt.db");
             let sidecar_backup_path =
                 backup_path.with_file_name(format!("{backup_file_name}{suffix}"));
             let _ = std::fs::rename(sidecar_path, sidecar_backup_path);

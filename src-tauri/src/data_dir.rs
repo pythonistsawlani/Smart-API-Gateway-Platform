@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 #[cfg(all(feature = "gui", mobile))]
 use tauri::Manager;
 
-const APP_BINARY_NAMES: &[&str] = &["api-switch", "api-switch.exe"];
+const APP_BINARY_NAMES: &[&str] = &["smart-api-gateway", "smart-api-gateway.exe"];
 
 pub(crate) fn resolve_data_dir() -> Result<PathBuf, AppError> {
     resolve_data_dir_from(
@@ -35,7 +35,7 @@ pub(crate) fn database_path_from_app(app: &tauri::AppHandle) -> Result<PathBuf, 
 
 fn database_path_in(dir: PathBuf) -> Result<PathBuf, AppError> {
     ensure_data_dir(&dir)?;
-    Ok(dir.join("api-switch.db"))
+    Ok(dir.join("smart-api-gateway.db"))
 }
 
 fn ensure_data_dir(dir: &Path) -> Result<(), AppError> {
@@ -46,7 +46,7 @@ fn ensure_data_dir(dir: &Path) -> Result<(), AppError> {
         ))
     })?;
 
-    let probe = dir.join(".api-switch-write-test");
+    let probe = dir.join(".smart-api-gateway-write-test");
     std::fs::write(&probe, b"ok").map_err(|e| {
         AppError::Database(format!(
             "Data directory is not writable {}: {e}",
@@ -95,7 +95,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn loader_invocation_uses_api_switch_argument_parent() {
+    fn loader_invocation_uses_smart_api_gateway_argument_parent() {
         let dir = resolve_data_dir_from(
             [
                 PathBuf::from(
@@ -103,7 +103,7 @@ mod tests {
                 ),
                 PathBuf::from("--library-path"),
                 PathBuf::from("/data/data/com.termux/files/home/as-libs/combined"),
-                PathBuf::from("/data/data/com.termux/files/home/work/as/api-switch"),
+                PathBuf::from("/data/data/com.termux/files/home/work/as/smart-api-gateway"),
                 PathBuf::from("--nodisktop"),
             ],
             || {
@@ -123,25 +123,25 @@ mod tests {
     #[test]
     fn direct_invocation_falls_back_to_current_exe_parent() {
         let dir = resolve_data_dir_from(
-            [PathBuf::from("api-switch"), PathBuf::from("--nodisktop")],
-            || Ok(PathBuf::from("/opt/api-switch/api-switch")),
+            [PathBuf::from("smart-api-gateway"), PathBuf::from("--nodisktop")],
+            || Ok(PathBuf::from("/opt/smart-api-gateway/smart-api-gateway")),
         )
         .unwrap();
 
-        assert_eq!(dir, PathBuf::from("/opt/api-switch"));
+        assert_eq!(dir, PathBuf::from("/opt/smart-api-gateway"));
     }
 
     #[test]
     fn database_path_uses_requested_directory() {
         let dir =
-            std::env::temp_dir().join(format!("api-switch-data-dir-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("smart-api-gateway-data-dir-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         let path = database_path_in(dir.clone()).unwrap();
 
-        assert_eq!(path, dir.join("api-switch.db"));
+        assert_eq!(path, dir.join("smart-api-gateway.db"));
         assert!(dir.exists());
-        assert!(!dir.join(".api-switch-write-test").exists());
+        assert!(!dir.join(".smart-api-gateway-write-test").exists());
 
         let _ = std::fs::remove_dir_all(dir);
     }
